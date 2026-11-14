@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.Security
 if (-not $Token) {
     $Token = Read-Host "Enter the VK community access token" -AsSecureString
 }
@@ -21,10 +22,10 @@ try {
     $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
     if ([string]::IsNullOrWhiteSpace($plain)) { throw "The token cannot be empty." }
     $plainBytes = [Text.Encoding]::UTF8.GetBytes($plain.Trim())
-    $protectedBytes = [Security.Cryptography.ProtectedData]::Protect(
+    $protectedBytes = [System.Security.Cryptography.ProtectedData]::Protect(
         $plainBytes,
         $null,
-        [Security.Cryptography.DataProtectionScope]::LocalMachine)
+        [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
 
     $temporaryPath = "$tokenPath.$([Guid]::NewGuid().ToString('N')).tmp"
     [IO.File]::WriteAllBytes($temporaryPath, $protectedBytes)
@@ -35,7 +36,11 @@ finally {
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
 }
 
-& icacls.exe $secretDirectory /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
+$currentUserSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+& icacls.exe $secretDirectory /inheritance:r /grant:r `
+    "*S-1-5-18:(OI)(CI)F" `
+    "*S-1-5-32-544:(OI)(CI)F" `
+    "*$($currentUserSid):(OI)(CI)F" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Failed to restrict the secrets directory ACL." }
 
 Write-Host "The encrypted token was saved to: $tokenPath"
