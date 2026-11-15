@@ -153,13 +153,13 @@ dotnet run --project .\src\BifitReport.Agent\BifitReport.Agent.csproj -c Release
 
 ![Графический настройщик BifitReport](docs/settings-gui.png)
 
-На кассе после установки запустите от администратора:
+На кассе после установки запустите:
 
-```powershell
-.\scripts\settings-gui.ps1
+```text
+C:\Program Files\BifitReport\BifitReport.Settings.exe
 ```
 
-или двойным щелчком `scripts\settings-gui.cmd` — скрипт сам запросит повышение прав (UAC).
+Двойной щелчок — приложение само запросит повышение прав (UAC). PowerShell не нужен: это отдельный exe под .NET Framework 4.8, который уже есть в Windows 10. Файл также лежит в каталоге публикации рядом с `BifitReport.Agent.exe`.
 
 Что умеет:
 
@@ -171,7 +171,7 @@ dotnet run --project .\src\BifitReport.Agent\BifitReport.Agent.csproj -c Release
 - показывать `status.json`, `archive-status.json` и размер очереди;
 - сохранять настройки и перезапускать службу.
 
-Файл настроек — `C:\Program Files\BifitReport\appsettings.json`; для сохранения нужны права администратора.
+Файл настроек — `appsettings.json` рядом с exe (`C:\Program Files\BifitReport\appsettings.json`); для сохранения нужны права администратора. Для тестового запуска можно указать другой файл: `BifitReport.Settings.exe --config D:\test\appsettings.json --no-elevate`.
 
 ## Подключение VK
 

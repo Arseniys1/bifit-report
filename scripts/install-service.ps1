@@ -129,4 +129,5 @@ Write-Host "Service $ServiceName is installed and running. Delivery mode: $Mode"
 if ($ArchiveEnabled) {
     Write-Host "Archive: $ArchiveDestination\$ArchiveSourceName"
 }
+Write-Host "Settings: $InstallPath\BifitReport.Settings.exe"
 Write-Host "Status: $StateDirectory\status.json"

@@ -23,6 +23,11 @@ dotnet publish (Join-Path $repositoryRoot "src\BifitReport.Agent\BifitReport.Age
 
 if ($LASTEXITCODE -ne 0) { throw "Publish failed." }
 
+# Отдельный exe настройщика: net48, без PowerShell и без установки рантайма на кассах.
+$settingsProject = Join-Path $repositoryRoot "src\BifitReport.Settings\BifitReport.Settings.csproj"
+dotnet publish $settingsProject -c Release --output $OutputPath
+if ($LASTEXITCODE -ne 0) { throw "Settings publish failed." }
+
 # Скрипты установки кладём рядом с приложением, чтобы каталог публикации
 # можно было целиком перенести на кассу и установить службу оттуда.
 $scriptsTarget = Join-Path $OutputPath "scripts"
