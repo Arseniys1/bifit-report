@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
     [string]$OutputPath = "",
-    [switch]$SelfContained
+    [switch]$SelfContained,
+    [string]$Version = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,19 +14,22 @@ if (-not $OutputPath) {
 }
 $OutputPath = [System.IO.Path]::GetFullPath($OutputPath)
 $selfContainedValue = if ($SelfContained) { "true" } else { "false" }
+$versionArgs = @()
+if ($Version) { $versionArgs = @("-p:Version=$Version") }
 
 New-Item -ItemType Directory -Force -Path $OutputPath | Out-Null
 dotnet publish (Join-Path $repositoryRoot "src\BifitReport.Agent\BifitReport.Agent.csproj") `
     -c Release `
     -r win-x64 `
     --self-contained $selfContainedValue `
-    --output $OutputPath
+    --output $OutputPath `
+    @versionArgs
 
 if ($LASTEXITCODE -ne 0) { throw "Publish failed." }
 
 # Отдельный exe настройщика: net48, без PowerShell и без установки рантайма на кассах.
 $settingsProject = Join-Path $repositoryRoot "src\BifitReport.Settings\BifitReport.Settings.csproj"
-dotnet publish $settingsProject -c Release --output $OutputPath
+dotnet publish $settingsProject -c Release --output $OutputPath @versionArgs
 if ($LASTEXITCODE -ne 0) { throw "Settings publish failed." }
 
 # Скрипты установки кладём рядом с приложением, чтобы каталог публикации

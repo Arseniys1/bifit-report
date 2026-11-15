@@ -9,7 +9,6 @@
     <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
     <Product>BifitReport Settings</Product>
     <AssemblyTitle>BifitReport — настройки</AssemblyTitle>
-    <Version>1.0.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

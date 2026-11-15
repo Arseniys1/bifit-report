@@ -16,3 +16,64 @@ jobs:
       - run: dotnet restore BifitReport.sln
       - run: dotnet build BifitReport.sln -c Release --no-restore
       - run: dotnet test BifitReport.sln -c Release --no-build --logger "trx;LogFileName=test-results.trx"
+
+  installer-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Build installer and portable archive
+        run: .\scripts\build-release.ps1 -Version 0.0.0 -SkipTests
+      - name: Verify installer (install, upgrade, uninstall)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Get-ChildItem 'dist\BifitReport-*-setup.exe' | Select-Object -First 1).FullName
+          $installDir = 'C:\Program Files\BifitReport'
+          $configPath = Join-Path $installDir 'appsettings.json'
+          $stateDir = 'C:\ProgramData\BifitReport'
+          $log = Join-Path $env:RUNNER_TEMP 'installer-setup.log'
+
+          function Invoke-Setup([string[]]$Arguments) {
+              $process = Start-Process -FilePath $setup -ArgumentList $Arguments -Wait -PassThru
+              if ($process.ExitCode -ne 0) {
+                  if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 60 }
+                  throw "Setup failed with exit code $($process.ExitCode)"
+              }
+          }
+
+          Invoke-Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$log")
+          if (-not (Test-Path -LiteralPath (Join-Path $installDir 'BifitReport.Settings.exe'))) { throw 'Settings exe is missing.' }
+          $service = Get-Service -Name BifitReport -ErrorAction Stop
+          if ($service.Status -ne 'Running') { throw "Service status is $($service.Status)." }
+          if (-not (Test-Path -LiteralPath $stateDir)) { throw 'State directory was not created.' }
+
+          # Обновление поверх установленной версии не должно сбрасывать настройки.
+          $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+          $config.Reports.StoreName = 'CI Upgrade Test'
+          $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $configPath -Encoding UTF8
+
+          Invoke-Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$log")
+          $service = Get-Service -Name BifitReport -ErrorAction Stop
+          if ($service.Status -ne 'Running') { throw "Service status after upgrade is $($service.Status)." }
+          $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+          if ($config.Reports.StoreName -ne 'CI Upgrade Test') { throw 'Upgrade overwrote appsettings.json.' }
+
+          $uninstaller = Join-Path $installDir 'unins000.exe'
+          $process = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Uninstall failed with exit code $($process.ExitCode)." }
+          if (Get-Service -Name BifitReport -ErrorAction SilentlyContinue) { throw 'Service still exists after uninstall.' }
+          if (Test-Path -LiteralPath $installDir) { throw 'Program files still exist after uninstall.' }
+          if (-not (Test-Path -LiteralPath $stateDir)) { throw 'State directory should be kept after uninstall.' }
+
+          Remove-Item -LiteralPath $stateDir -Recurse -Force
+          Write-Host 'Installer install/upgrade/uninstall checks passed.'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-smoke
+          path: dist/*
+          if-no-files-found: error

@@ -32,11 +32,50 @@
 
 ## Требования
 
-- Windows 10/11 или Windows Server;
-- .NET 8 Runtime для framework-dependent публикации;
+- Windows 10/11 x64 или Windows Server x64;
+- .NET 8 Runtime — только для framework-dependent публикации; инсталлятор и portable-архив с GitHub Releases содержат self-contained сборку, и .NET на кассе не нужен;
+- .NET Framework 4.8 — для графического настройщика (уже есть в Windows 10 1903+ и Windows 11);
 - «БИФИТ Касса / Касса Розница» с журналом по умолчанию:
   `C:\ProgramData\BIFIT\retail\logs\desktop.log`;
 - сообщество VK с включёнными сообщениями и ключом с правом `messages`.
+
+## Установка из GitHub Releases
+
+Готовые сборки публикуются на странице [Releases](https://github.com/Arseniys1/bifit-report/releases).
+
+1. Скачайте `BifitReport-<версия>-setup.exe` из последнего релиза.
+2. Запустите файл от имени администратора — двойной щелчок, Windows сама запросит UAC.
+3. Мастер установит программу в `C:\Program Files\BifitReport`, зарегистрирует службу `BifitReport` и запустит её. На последнем шаге отметьте «Открыть настройщик BIFIT Report».
+4. В настройщике укажите путь к журналу, имя точки и режим доставки; для режима VK сохраните токен и получателей. Нажмите «Сохранить» — служба перезапустится с новыми настройками.
+
+Что делает инсталлятор:
+
+- копирует агент, настройщик и скрипты в `C:\Program Files\BifitReport`;
+- создаёт каталог состояния `C:\ProgramData\BifitReport` и ограничивает доступ к нему (`SYSTEM` и администраторы);
+- регистрирует службу `BifitReport` с автозапуском;
+- сам ничего не отправляет в сеть: до настройки режима `VK` служба работает в безопасном режиме `File` и только пишет `delivery-preview.log`.
+
+**Обновление.** Запустите инсталлятор новой версии поверх старой. Служба останавливается, файлы заменяются, а `appsettings.json`, состояние, очередь и DPAPI-токен сохраняются: имя точки, режим доставки, получатели и настройки архива не сбрасываются.
+
+**Удаление.** «Параметры → Приложения» → BIFIT Report → Удалить. Служба и файлы программы удаляются, а состояние в `C:\ProgramData\BifitReport` — нет: после переустановки история и очередь продолжатся. Чтобы удалить и состояние, выполните до удаления:
+
+```powershell
+& "C:\Program Files\BifitReport\scripts\uninstall-service.ps1" -RemoveState
+```
+
+или после удаления:
+
+```powershell
+Remove-Item "C:\ProgramData\BifitReport" -Recurse -Force
+```
+
+**Инсталлятор не подписан**, поэтому SmartScreen или антивирус может показать предупреждение. Если это неприемлемо на кассах, используйте portable-архив и `scripts\install-service.ps1` (см. ниже) либо подпишите сборку сертификатом.
+
+**Portable-архив** `BifitReport-<версия>-portable-win-x64.zip` — та же self-contained сборка без инсталлятора: распакуйте её на кассе и запустите `scripts\install-service.ps1` от администратора. Контрольные суммы всех файлов релиза лежат в `SHA256SUMS.txt`; проверка:
+
+```powershell
+Get-FileHash .\BifitReport-1.0.0-setup.exe -Algorithm SHA256
+```
 
 ## Сборка и тесты
 
@@ -53,6 +92,31 @@ dotnet test BifitReport.sln -c Release --no-build
 ```
 
 Результат появится в `artifacts\publish\win-x64`.
+
+## Выпуск релиза
+
+Релиз собирается в GitHub Actions (`.github/workflows/release.yml`) и автоматически появляется на странице Releases. Достаточно поставить тег на нужный коммит:
+
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Workflow соберёт self-contained публикацию, portable-архив и инсталлятор Inno Setup, посчитает SHA256 и создаст релиз с вложениями:
+
+- `BifitReport-<версия>-setup.exe` — инсталлятор;
+- `BifitReport-<версия>-portable-win-x64.zip` — portable-сборка для установки скриптами;
+- `SHA256SUMS.txt` — контрольные суммы.
+
+Примечания к релизу собираются из коммитов после предыдущего тега. Если нужно выпустить черновик без тега: Actions → Release → Run workflow, указать версию и включить `draft`.
+
+Локальная сборка тех же артефактов:
+
+```powershell
+.\scripts\build-release.ps1 -Version 1.0.0
+```
+
+Нужны .NET 8 SDK и Inno Setup 6 (`winget install JRSoftware.InnoSetup`); результат — в `dist\`. Версия должна иметь вид `MAJOR.MINOR.PATCH` без префикса `v`: она попадает в имя инсталлятора, свойства exe и имя тега. Job `installer-smoke` в CI проверяет, что инсталлятор собирается на каждом pull request.
 
 ## Безопасная локальная проверка
 

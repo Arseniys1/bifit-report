@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Версия без префикса v, например 1.0.0"
+        required: true
+        type: string
+      draft:
+        description: "Создать черновик релиза"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Resolve version and tag
+        id: version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+              $tag = $env:GITHUB_REF.Substring('refs/tags/'.Length)
+              $version = $tag.Substring(1)
+          } else {
+              $version = "${{ inputs.version }}".Trim().TrimStart('v')
+              if (-not $version) { throw 'Укажите версию, например 1.0.0.' }
+              $tag = "v$version"
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+              throw "Версия должна иметь вид MAJOR.MINOR.PATCH, получено: $version"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "Version: $version, tag: $tag"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          if (-not (Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')) {
+              throw 'ISCC.exe not found after Inno Setup installation.'
+          }
+
+      - name: Build release artifacts
+        shell: pwsh
+        run: .\scripts\build-release.ps1 -Version ${{ steps.version.outputs.version }}
+
+      - name: Generate release notes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '${{ steps.version.outputs.version }}'
+          $previousTag = $null
+          $ErrorActionPreference = 'Continue'
+          $previousTag = git describe --tags --abbrev=0 'HEAD^' 2>$null
+          $describeExit = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          if ($describeExit -ne 0) { $previousTag = $null }
+          $range = if ($previousTag) { "$previousTag..HEAD" } else { 'HEAD' }
+          Write-Host "Changelog range: $range"
+          $commits = (git log $range --no-merges --pretty=format:'- %s') -join "`n"
+          if (-not $commits) { $commits = '- Первый публичный релиз.' }
+
+          $template = @'
+          ## BIFIT Report __VERSION__
+
+          Служба Windows для наблюдения за журналом «БИФИТ Касса» и доставки отчётов в VK.
+
+          ### Установка
+
+          1. Скачайте `BifitReport-__VERSION__-setup.exe` и запустите от имени администратора.
+          2. Мастер установит программу в `C:\Program Files\BifitReport`, зарегистрирует службу `BifitReport` и при первом запуске откроет настройщик.
+          3. В настройщике укажите путь к журналу, имя точки, режим доставки и токен VK, затем нажмите «Сохранить».
+
+          Требования: Windows 10/11 x64 или Windows Server. .NET на кассе не нужен — сборка self-contained.
+
+          Вариант `BifitReport-__VERSION__-portable-win-x64.zip` предназначен для установки скриптами `scripts\install-service.ps1`.
+
+          ### Изменения
+
+          __COMMITS__
+
+          ### Целостность
+
+          `SHA256SUMS.txt` содержит контрольные суммы всех файлов релиза. Проверка:
+
+          ```powershell
+          Get-FileHash .\BifitReport-__VERSION__-setup.exe -Algorithm SHA256
+          ```
+
+          Инсталлятор не подписан, поэтому SmartScreen может показать предупреждение.
+          '@
+
+          $notes = $template.Replace('__VERSION__', $version).Replace('__COMMITS__', $commits)
+          Set-Content -LiteralPath 'release-notes.md' -Value $notes -Encoding UTF8
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DRAFT: ${{ inputs.draft && 'true' || 'false' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $assets = Get-ChildItem -LiteralPath dist -File | Select-Object -ExpandProperty FullName
+
+          gh release view $env:TAG --json tagName 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+              Write-Host "Release $env:TAG already exists, uploading assets."
+              gh release upload $env:TAG @assets --clobber
+              if ($LASTEXITCODE -ne 0) { throw 'gh release upload failed.' }
+          }
+          else {
+              $arguments = @('release', 'create', $env:TAG) + $assets + @(
+                  '--title', "BIFIT Report $env:VERSION",
+                  '--notes-file', 'release-notes.md'
+              )
+              if ($env:DRAFT -eq 'true') {
+                  $arguments += '--draft'
+              }
+              else {
+                  $arguments += '--latest'
+              }
+              gh @arguments
+              if ($LASTEXITCODE -ne 0) { throw 'gh release create failed.' }
+          }
+          Write-Host "Release URL: $(gh release view $env:TAG --json url --jq .url)"
