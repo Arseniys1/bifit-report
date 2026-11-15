@@ -25,4 +25,8 @@ public sealed record BifitEvent(
     bool? Success = null,
     string? ErrorCategory = null,
     bool IsCritical = false,
-    string? SafeMessage = null);
+    string? SafeMessage = null)
+{
+    /// <summary>Очищенный и ограниченный по длине фрагмент стека/исключения.</summary>
+    public string? Detail { get; init; }
+}

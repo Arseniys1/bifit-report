@@ -62,6 +62,75 @@ public sealed class BifitLogParserTests
         Assert.Null(_parser.Parse(record));
     }
 
+    [Fact]
+    public void AttachesExceptionDetailToErrorOnly()
+    {
+        var records = new List<LogRecord>
+        {
+            new("file", 0, "2026-11-15 21:15:39,562 ERROR com.bifit.cashdesk.desktop.plugin.kkm.rr_electro.RRElectro [thread] error"),
+            new("file", 1, "java.lang.RuntimeException: Ошибка РР Электро -1: "),
+            new("file", 2, "\tat com.bifit.cashdesk.desktop.plugin.kkm.rr_electro.RRElectro.checkResult(RRElectro.java:234) ~[rr-electro.jar:?]"),
+            new("file", 3, "2026-11-15 21:15:39,564 ERROR com.bifit.cashdesk.desktop.plugin.kkm.rr_electro.RRElectro [thread] Get KKM info error"),
+            new("file", 4, "java.lang.RuntimeException: Ошибка РР Электро -1: ")
+        };
+
+        var events = _parser.ParseBatch(records, 8, 900);
+
+        Assert.Equal(2, events.Count);
+        Assert.Contains("java.lang.RuntimeException", events[0].Detail, StringComparison.Ordinal);
+        Assert.Contains("checkResult", events[0].Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("Get KKM", events[0].Detail, StringComparison.Ordinal);
+        Assert.Contains("java.lang.RuntimeException", events[1].Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LimitsExceptionDetailByLines()
+    {
+        var records = new List<LogRecord>
+        {
+            new("file", 0, "2026-11-15 21:15:39,562 ERROR com.bifit.cashdesk.desktop.plugin.kkm.rr_electro.RRElectro [thread] error")
+        };
+        for (var index = 1; index <= 20; index++)
+        {
+            records.Add(new LogRecord("file", index, $"\tat frame{index}"));
+        }
+
+        var events = _parser.ParseBatch(records, 3, 900);
+
+        Assert.Single(events);
+        Assert.Equal(3, events[0].Detail!.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+    }
+
+    [Fact]
+    public void DoesNotAttachDetailToShiftEvent()
+    {
+        var records = new List<LogRecord>
+        {
+            new("file", 0, "2026-11-15 21:15:00,000 INFO com.bifit.cashdesk.desktop.service.ReceiptSessionService [thread] Смена синхронизирована ReceiptSession(internalId=1, id=null, userOpenId=1, userCloseId=null, organizationId=1, tradeObjectId=2, deviceIdentifier=x, internalSession=1, externalSession=1, open=2026-11-15T21:15:00+05:00, closed=null, synced=false)"),
+            new("file", 1, "java.lang.RuntimeException: not for shift")
+        };
+
+        var events = _parser.ParseBatch(records, 8, 900);
+
+        Assert.Single(events);
+        Assert.Null(events[0].Detail);
+    }
+
+    [Fact]
+    public void RedactsSecretsInsideExceptionDetail()
+    {
+        var records = new List<LogRecord>
+        {
+            new("file", 0, "2026-11-15 21:15:39,562 ERROR com.bifit.cashdesk.desktop.plugin.kkm.rr_electro.RRElectro [thread] error"),
+            new("file", 1, "java.lang.RuntimeException: access_token=vk1.secret")
+        };
+
+        var events = _parser.ParseBatch(records, 8, 900);
+
+        Assert.Single(events);
+        Assert.DoesNotContain("vk1.secret", events[0].Detail, StringComparison.Ordinal);
+    }
+
     private BifitEvent Parse(string text, long position = 0) =>
         _parser.Parse(new LogRecord("file", position, text)) ?? throw new Xunit.Sdk.XunitException("Строка не распознана.");
 }

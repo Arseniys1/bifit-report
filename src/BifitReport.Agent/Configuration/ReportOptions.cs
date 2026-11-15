@@ -14,6 +14,13 @@ public sealed class ReportOptions
 
     public bool IncludeSanitizedErrorMessage { get; set; }
 
+    /// <summary>Добавлять к критическому алерту очищенный фрагмент стека/исключения.</summary>
+    public bool IncludeExceptionDetails { get; set; } = true;
+
+    public int MaxExceptionLines { get; set; } = 8;
+
+    public int MaxExceptionCharacters { get; set; } = 900;
+
     public int CriticalErrorCooldownMinutes { get; set; } = 10;
 
     public bool PeriodicSummaryEnabled { get; set; }

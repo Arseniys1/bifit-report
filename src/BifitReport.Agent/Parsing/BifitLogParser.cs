@@ -17,8 +17,7 @@ public sealed partial class BifitLogParser(
     ];
 
     public BifitEvent? Parse(LogRecord record)
-    {
-        var match = LogPrefixRegex().Match(record.Text);
+    {        var match = LogPrefixRegex().Match(record.Text);
         if (!match.Success) return null;
         if (!DateTimeOffset.TryParseExact(
                 match.Groups["timestamp"].Value,
@@ -124,6 +123,61 @@ public sealed partial class BifitLogParser(
 
         return null;
     }
+
+    /// <summary>
+    /// Разбирает пакет строк журнала, приклеивая к ERROR-событиям последующие
+    /// строки стека/исключения (они не имеют префикса журнала).
+    /// </summary>
+    public IReadOnlyList<BifitEvent> ParseBatch(
+        IReadOnlyList<LogRecord> records,
+        int maximumDetailLines,
+        int maximumDetailCharacters)
+    {
+        var events = new List<BifitEvent>();
+        var detail = new StringBuilder();
+        var detailLineCount = 0;
+        BifitEvent? current = null;
+
+        foreach (var record in records)
+        {
+            if (IsEntryStart(record.Text))
+            {
+                FlushCurrent();
+                current = Parse(record);
+                continue;
+            }
+
+            if (current is null) continue;
+            if (detailLineCount >= maximumDetailLines || detail.Length >= maximumDetailCharacters) continue;
+
+            var line = record.Text.Trim();
+            if (line.Length == 0) continue;
+            if (line.Length > 300) line = line[..300] + "…";
+            detail.AppendLine(line);
+            detailLineCount++;
+        }
+
+        FlushCurrent();
+        return events;
+
+        void FlushCurrent()
+        {
+            if (current is null) return;
+
+            if (current.Type == BifitEventType.ApplicationError && detail.Length > 0)
+            {
+                var text = redactor.Redact(detail.ToString().Trim(), Math.Max(1, maximumDetailCharacters));
+                current = current with { Detail = text };
+            }
+
+            events.Add(current);
+            current = null;
+            detail.Clear();
+            detailLineCount = 0;
+        }
+    }
+
+    public static bool IsEntryStart(string text) => LogPrefixRegex().IsMatch(text);
 
     private static DateTimeOffset? ParseIsoTimestamp(string value) =>
         DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var result)

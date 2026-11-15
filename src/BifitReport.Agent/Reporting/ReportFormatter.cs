@@ -52,12 +52,22 @@ public sealed class ReportFormatter(IOptions<ReportOptions> options)
         builder.AppendLine($"Категория: {bifitEvent.ErrorCategory ?? "Ошибка кассы"}");
         builder.AppendLine($"Время: {FormatTime(bifitEvent.Timestamp)}");
         builder.AppendLine($"Источник: {ShortLoggerName(bifitEvent.Logger)}");
-        if (_options.IncludeSanitizedErrorMessage && !string.IsNullOrWhiteSpace(bifitEvent.SafeMessage))
+        if (_options.IncludeSanitizedErrorMessage && IsInformativeErrorText(bifitEvent.SafeMessage))
         {
-            builder.AppendLine($"Сообщение: {bifitEvent.SafeMessage}");
+            builder.AppendLine($"Ошибка: {bifitEvent.SafeMessage}");
         }
 
-        builder.Append("Проверьте кассу на рабочем месте. Полная строка журнала в VK не отправляется.");
+        if (_options.IncludeExceptionDetails && !string.IsNullOrWhiteSpace(bifitEvent.Detail))
+        {
+            builder.AppendLine("Детали:");
+            builder.AppendLine(bifitEvent.Detail);
+            builder.Append("Проверьте кассу на рабочем месте. В сообщении — очищенный фрагмент журнала.");
+        }
+        else
+        {
+            builder.Append("Проверьте кассу на рабочем месте. Полная строка журнала в VK не отправляется.");
+        }
+
         return builder.ToString();
     }
 
@@ -93,6 +103,15 @@ public sealed class ReportFormatter(IOptions<ReportOptions> options)
             : $"внутренняя {shift.InternalId}";
 
     private static string FormatTime(DateTimeOffset value) => value.ToString("dd.MM.yyyy HH:mm:ss zzz", RussianCulture);
+
+    private static bool IsInformativeErrorText(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var trimmed = text.Trim();
+        return !string.Equals(trimmed, "error", StringComparison.OrdinalIgnoreCase) &&
+               !string.Equals(trimmed, "failed", StringComparison.OrdinalIgnoreCase) &&
+               !string.Equals(trimmed, "fail", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static string ShortLoggerName(string logger)
     {

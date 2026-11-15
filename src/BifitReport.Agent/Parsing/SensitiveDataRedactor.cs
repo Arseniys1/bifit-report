@@ -4,7 +4,9 @@ namespace BifitReport.Agent.Parsing;
 
 public sealed partial class SensitiveDataRedactor
 {
-    public string Redact(string value)
+    public string Redact(string value) => Redact(value, 300);
+
+    public string Redact(string value, int maximumLength)
     {
         if (string.IsNullOrWhiteSpace(value)) return string.Empty;
 
@@ -13,7 +15,8 @@ public sealed partial class SensitiveDataRedactor
         result = PhoneRegex().Replace(result, "[ТЕЛЕФОН]");
         result = CardRegex().Replace(result, static match => MaskDigits(match.Value));
         result = LongIdentifierRegex().Replace(result, "[ИДЕНТИФИКАТОР]");
-        return result.Length <= 300 ? result : result[..300] + "…";
+        var limit = Math.Max(1, maximumLength);
+        return result.Length <= limit ? result : result[..limit] + "…";
     }
 
     private static string MaskDigits(string value)

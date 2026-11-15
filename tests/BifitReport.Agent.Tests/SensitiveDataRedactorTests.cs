@@ -16,4 +16,15 @@ public sealed class SensitiveDataRedactorTests
         Assert.DoesNotContain("999 123", result, StringComparison.Ordinal);
         Assert.DoesNotContain("2200 1234", result, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void TruncatesLongTextToRequestedLength()
+    {
+        var source = string.Join(" ", Enumerable.Repeat("word", 500));
+
+        var result = new SensitiveDataRedactor().Redact(source, 50);
+
+        Assert.True(result.Length <= 51);
+        Assert.EndsWith("…", result, StringComparison.Ordinal);
+    }
 }

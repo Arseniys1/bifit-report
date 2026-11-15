@@ -9,6 +9,7 @@ namespace BifitReport.Agent.Workers;
 
 public sealed class LogIngestionWorker(
     IOptions<AgentOptions> options,
+    IOptions<ReportOptions> reportOptions,
     LogTailer tailer,
     BifitLogParser parser,
     ReportAggregator aggregator,
@@ -16,6 +17,7 @@ public sealed class LogIngestionWorker(
     ILogger<LogIngestionWorker> logger) : BackgroundService
 {
     private readonly AgentOptions _options = options.Value;
+    private readonly ReportOptions _reportOptions = reportOptions.Value;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -26,10 +28,12 @@ public sealed class LogIngestionWorker(
             try
             {
                 var batch = await tailer.ReadAsync(stoppingToken);
-                foreach (var record in batch.Records)
+                foreach (var bifitEvent in parser.ParseBatch(
+                             batch.Records,
+                             _reportOptions.MaxExceptionLines,
+                             _reportOptions.MaxExceptionCharacters))
                 {
-                    var bifitEvent = parser.Parse(record);
-                    if (bifitEvent is not null) await aggregator.HandleAsync(bifitEvent, stoppingToken);
+                    await aggregator.HandleAsync(bifitEvent, stoppingToken);
                 }
 
                 if (batch.LogExists) await tailer.CommitAsync(batch, stoppingToken);

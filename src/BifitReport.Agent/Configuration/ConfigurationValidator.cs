@@ -57,6 +57,8 @@ public sealed class ConfigurationValidator(IConfiguration configuration) :
         if (options.CriticalErrorCooldownMinutes is < 1 or > 1440) failures.Add("Reports:CriticalErrorCooldownMinutes должен быть от 1 до 1440.");
         if (options.PeriodicSummaryMinutes is < 5 or > 1440) failures.Add("Reports:PeriodicSummaryMinutes должен быть от 5 до 1440.");
         if (options.PendingPaymentLifetimeMinutes is < 1 or > 120) failures.Add("Reports:PendingPaymentLifetimeMinutes должен быть от 1 до 120.");
+        if (options.MaxExceptionLines is < 0 or > 50) failures.Add("Reports:MaxExceptionLines должен быть от 0 до 50.");
+        if (options.MaxExceptionCharacters is < 100 or > 3000) failures.Add("Reports:MaxExceptionCharacters должен быть от 100 до 3000.");
         return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
     }
 
