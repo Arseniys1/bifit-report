@@ -103,11 +103,57 @@ dotnet run --project .\src\BifitReport.Agent\BifitReport.Agent.csproj -c Release
 
 Служба называется `BifitReport`. В режиме `File` она уже полностью работает, но ничего не отправляет в сеть.
 
+### Установка на кассы (несколько компьютеров)
+
+1. На машине сборки:
+
+   ```powershell
+   .\scripts\publish.ps1 -SelfContained
+   ```
+
+   Получится `artifacts\publish\win-x64-selfcontained` — его можно целиком копировать на кассу, .NET на ней не нужен. Без `-SelfContained` публикация меньше, но на каждой кассе потребуется .NET 8 Runtime. Скрипты установки копируются в подкаталог `scripts\` публикации.
+
+2. Скопируйте каталог публикации на кассу, например в `C:\Temp\BifitReport`.
+
+3. На каждой кассе в PowerShell **от администратора**, из каталога публикации:
+
+   ```powershell
+   .\scripts\set-vk-token.ps1
+   .\scripts\install-service.ps1 `
+     -LogPath "C:\ProgramData\BIFIT\retail\logs\desktop.log" `
+     -StoreName "Карагай-1" `
+     -Mode VK `
+     -PeerIds 2000000001 `
+     -ArchiveEnabled `
+     -ArchiveDestination "E:\bifit\archive\bifit-logs"
+   ```
+
+   `-PublishPath` не нужен: скрипт находит `BifitReport.Agent.exe` рядом с собой. Имя источника архива по умолчанию берётся из `-StoreName` (можно задать явно через `-ArchiveSourceName`).
+
+4. Повторите для каждой кассы, меняя `-StoreName` — оно попадает в сообщение как «Точка: ...». `-PeerIds` может быть общим чатом или отдельным для точки.
+
+5. Проверка на кассе:
+
+   ```powershell
+   Get-Service BifitReport
+   Get-Content C:\ProgramData\BifitReport\status.json
+   Get-Content C:\ProgramData\BifitReport\archive-status.json
+   .\scripts\send-test-vk.ps1 -PeerId 2000000001
+   ```
+
+Важно:
+
+- **Токен VK шифруется DPAPI в области `LocalMachine` и привязан к компьютеру.** Скопировать `vk-token.dat` с одной кассы на другую нельзя — на каждой выполните `set-vk-token.ps1` (токен сообщества при этом один и тот же).
+- Служба работает от `LocalSystem`. Для архива на сетевом ресурсе (`\\server\share`) этому аккаунту нужен доступ; в рабочей группе проще архивировать локально и синхронизировать позже.
+- `install-service.ps1` удаляет `appsettings.local.json` из каталога установки, чтобы тестовые настройки не перекрыли боевые.
+- Обновление: скопируйте новый каталог публикации и запустите `install-service.ps1` с теми же параметрами — служба остановится, файлы обновятся, состояние и очередь сохранятся.
+- Удаление: `.\scripts\uninstall-service.ps1`; состояние сохраняется, для удаления состояния добавьте `-RemoveState`.
+
 ## Подключение VK
 
 1. Создайте ключ доступа сообщества с правом на сообщения.
 2. Пользователь должен разрешить сообщения сообщества либо добавить бота сообщества в беседу.
-3. Сохраните ключ через DPAPI:
+3. Сохраните ключ через DPAPI **на каждой кассе** (файл токена привязан к компьютеру):
 
 ```powershell
 .\scripts\set-vk-token.ps1
@@ -217,12 +263,43 @@ BIFIT_REPORT_Agent__LogPath=C:\ProgramData\BIFIT\retail\logs\desktop.log
 
 ## Удаление службы
 
-```powershell
-.\scripts\uninstall-service.ps1
-```
-
-По умолчанию накопленное состояние и предпросмотры сохраняются. Для их явного удаления:
+На каждой кассе в PowerShell **от администратора**:
 
 ```powershell
-.\scripts\uninstall-service.ps1 -RemoveState
+& "C:\Program Files\BifitReport\scripts\uninstall-service.ps1" -RemoveState
 ```
+
+Скрипт останавливает и удаляет службу `BifitReport`, останавливает вручную запущенный агент, удаляет каталог программы и — с `-RemoveState` — состояние: очередь, контрольные точки и DPAPI-токен. **Архив журналов (`Archive:Destination`) не удаляется**, его нужно очистить отдельно.
+
+- Без `-RemoveState` состояние сохраняется: после переустановки история и очередь продолжатся.
+- `-KeepFiles` оставляет файлы программы, удаляя только службу.
+- Путь установки и состояния можно переопределить: `-InstallPath`, `-StateDirectory`.
+
+Если скрипта под рукой нет, удаление вручную:
+
+```powershell
+Stop-Service BifitReport -Force -ErrorAction SilentlyContinue
+sc.exe delete BifitReport
+Get-Process BifitReport.Agent -ErrorAction SilentlyContinue | Stop-Process -Force
+Remove-Item "C:\Program Files\BifitReport" -Recurse -Force
+Remove-Item "C:\ProgramData\BifitReport" -Recurse -Force   # только если состояние больше не нужно
+```
+
+Проверка:
+
+```powershell
+Get-Service BifitReport -ErrorAction SilentlyContinue   # ничего не должно найтись
+Test-Path "C:\Program Files\BifitReport"                # False
+Test-Path "C:\ProgramData\BifitReport"                  # False, если был -RemoveState
+Get-Process BifitReport.Agent -ErrorAction SilentlyContinue
+```
+
+Несколько касс сразу (если включён WinRM и есть права администратора на них):
+
+```powershell
+Invoke-Command -ComputerName kassa1,kassa2,kassa3 -ScriptBlock {
+    & "C:\Program Files\BifitReport\scripts\uninstall-service.ps1" -RemoveState
+}
+```
+
+Если WinRM недоступен, зайдите на каждую кассу по RDP и запустите скрипт от администратора. БИФИТ Касса, её база и журналы при удалении не затрагиваются.

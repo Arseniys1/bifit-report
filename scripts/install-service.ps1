@@ -10,12 +10,23 @@ param(
     [ValidateSet("File", "VK")]
     [string]$Mode = "File",
     [long[]]$PeerIds = @(),
+    [switch]$ArchiveEnabled,
+    [string]$ArchiveDestination = "",
+    [string]$ArchiveSourceName = "",
     [string]$ServiceName = "BifitReport"
 )
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-if (-not $PublishPath) { $PublishPath = Join-Path $repositoryRoot "artifacts\publish\win-x64" }
+if (-not $PublishPath) {
+    # При запуске из каталога публикации (scripts лежат рядом с exe) берём его,
+    # иначе — стандартный каталог сборки в репозитории.
+    $PublishPath = if (Test-Path -LiteralPath (Join-Path $repositoryRoot "BifitReport.Agent.exe")) {
+        $repositoryRoot
+    } else {
+        Join-Path $repositoryRoot "artifacts\publish\win-x64"
+    }
+}
 
 $PublishPath = [IO.Path]::GetFullPath($PublishPath)
 $InstallPath = [IO.Path]::GetFullPath($InstallPath)
@@ -28,6 +39,9 @@ if (-not (Test-Path -LiteralPath $sourceExecutable)) {
 }
 if ($Mode -eq "VK" -and $PeerIds.Count -eq 0) {
     throw "VK mode requires at least one -PeerIds value."
+}
+if ([string]::IsNullOrWhiteSpace($StoreName)) {
+    Write-Warning "StoreName is empty: reports will not identify the kassa."
 }
 $expectedTokenPath = Join-Path $StateDirectory "secrets\vk-token.dat"
 if ($Mode -eq "VK" -and -not (Test-Path -LiteralPath $expectedTokenPath)) {
@@ -66,6 +80,35 @@ $settings.Delivery.Mode = $Mode
 $settings.Reports.StoreName = $StoreName
 $settings.Vk.PeerIds = @($PeerIds)
 $settings.Vk.TokenFile = Join-Path $StateDirectory "secrets\vk-token.dat"
+
+if (-not $settings.PSObject.Properties['Archive']) {
+    throw "appsettings.json has no Archive section. Publish the current version of the agent first."
+}
+$settings.Archive.Enabled = [bool]$ArchiveEnabled
+if ($ArchiveEnabled) {
+    if ([string]::IsNullOrWhiteSpace($ArchiveDestination)) {
+        throw "-ArchiveEnabled requires -ArchiveDestination."
+    }
+    if ([string]::IsNullOrWhiteSpace($ArchiveSourceName)) {
+        $ArchiveSourceName = if ([string]::IsNullOrWhiteSpace($StoreName)) { $env:COMPUTERNAME } else { $StoreName }
+    }
+    if ($ArchiveSourceName.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) {
+        throw "ArchiveSourceName contains characters that are not allowed in a directory name: $ArchiveSourceName"
+    }
+    $settings.Archive.Destination = $ArchiveDestination
+    $settings.Archive.Sources = @([pscustomobject]@{
+        Name = $ArchiveSourceName
+        Path = (Split-Path -Parent $LogPath)
+    })
+    if ($ArchiveDestination -match '^\\\\') {
+        Write-Warning "UNC archive: the service runs as LocalSystem by default. Make sure that account can write to $ArchiveDestination, or change the service logon account."
+    }
+}
+else {
+    $settings.Archive.Destination = ""
+    $settings.Archive.Sources = @()
+}
+
 $settings | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $settingsPath -Encoding UTF8
 
 & icacls.exe $StateDirectory /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
@@ -83,4 +126,7 @@ if (-not $existingService) {
 
 Start-Service -Name $ServiceName
 Write-Host "Service $ServiceName is installed and running. Delivery mode: $Mode"
+if ($ArchiveEnabled) {
+    Write-Host "Archive: $ArchiveDestination\$ArchiveSourceName"
+}
 Write-Host "Status: $StateDirectory\status.json"
