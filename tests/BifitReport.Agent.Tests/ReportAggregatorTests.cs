@@ -49,6 +49,29 @@ public sealed class ReportAggregatorTests : IDisposable
     }
 
     [Fact]
+    public async Task ReadyMessagesAreDeliveredInCreationOrder()
+    {
+        var context = CreateContext();
+        string[] expected = ["first", "second", "third"];
+        foreach (var text in expected)
+        {
+            Assert.True(await context.Queue.EnqueueAsync(text, text, CancellationToken.None));
+            await Task.Delay(10);
+        }
+
+        var actual = new List<string>();
+        foreach (var _ in expected)
+        {
+            var message = await context.Queue.GetNextReadyAsync(DateTimeOffset.Now.AddMinutes(1), CancellationToken.None);
+            Assert.NotNull(message);
+            actual.Add(message.Text);
+            await context.Queue.CompleteAsync(message, "File", CancellationToken.None);
+        }
+
+        Assert.Equal(expected, actual);
+    }
+
+    [Fact]
     public void InferredShiftReportIsExplicitlyMarkedAsIncomplete()
     {
         var formatter = new ReportFormatter(Options.Create(new ReportOptions()));

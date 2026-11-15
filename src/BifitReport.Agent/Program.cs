@@ -1,3 +1,4 @@
+using BifitReport.Agent.Archiving;
 using BifitReport.Agent.Configuration;
 using BifitReport.Agent.Delivery;
 using BifitReport.Agent.Infrastructure;
@@ -30,11 +31,15 @@ builder.Services.AddOptions<VkOptions>()
 builder.Services.AddOptions<ReportOptions>()
     .Bind(builder.Configuration.GetSection(ReportOptions.SectionName))
     .ValidateOnStart();
+builder.Services.AddOptions<ArchiveOptions>()
+    .Bind(builder.Configuration.GetSection(ArchiveOptions.SectionName))
+    .ValidateOnStart();
 
 builder.Services.AddSingleton<IValidateOptions<AgentOptions>, ConfigurationValidator>();
 builder.Services.AddSingleton<IValidateOptions<DeliveryOptions>, ConfigurationValidator>();
 builder.Services.AddSingleton<IValidateOptions<VkOptions>, ConfigurationValidator>();
 builder.Services.AddSingleton<IValidateOptions<ReportOptions>, ConfigurationValidator>();
+builder.Services.AddSingleton<IValidateOptions<ArchiveOptions>, ConfigurationValidator>();
 
 builder.Services.AddSingleton<AtomicJsonFile>();
 builder.Services.AddSingleton<AppPaths>();
@@ -49,9 +54,11 @@ builder.Services.AddSingleton<DiskMessageQueue>();
 builder.Services.AddSingleton<ReportAggregator>();
 builder.Services.AddSingleton<VkTokenProvider>();
 builder.Services.AddSingleton<VkApiClient>();
+builder.Services.AddSingleton<LogArchiver>();
 
 builder.Services.AddHostedService<LogIngestionWorker>();
 builder.Services.AddHostedService<OutboundDeliveryWorker>();
 builder.Services.AddHostedService<PeriodicReportWorker>();
+builder.Services.AddHostedService<LogArchiveWorker>();
 
 await builder.Build().RunAsync();

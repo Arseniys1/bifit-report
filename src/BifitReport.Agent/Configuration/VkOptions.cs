@@ -15,4 +15,11 @@ public sealed class VkOptions
     public int TimeoutSeconds { get; set; } = 15;
 
     public int MaximumRetryDelayMinutes { get; set; } = 60;
+
+    /// <summary>
+    /// Базовый адрес с завершающим слешем: без него относительный путь метода
+    /// разрешается от корня хоста и запрос уходит не на <c>/method/messages.send</c>.
+    /// </summary>
+    public string NormalizedApiBaseUrl =>
+        string.IsNullOrWhiteSpace(ApiBaseUrl) ? ApiBaseUrl : ApiBaseUrl.TrimEnd('/') + "/";
 }

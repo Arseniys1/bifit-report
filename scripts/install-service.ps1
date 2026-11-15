@@ -49,6 +49,15 @@ if ($existingService -and $existingService.Status -ne "Stopped") {
 New-Item -ItemType Directory -Force -Path $InstallPath, $StateDirectory | Out-Null
 Copy-Item -Path (Join-Path $PublishPath "*") -Destination $InstallPath -Recurse -Force
 
+# appsettings.local.json перекрывает appsettings.json. Если он попал в каталог
+# публикации при локальных проверках, после установки он вернул бы старые
+# тестовые значения (режим доставки, получатели, имя точки) вместо заданных здесь.
+$localSettingsPath = Join-Path $InstallPath "appsettings.local.json"
+if (Test-Path -LiteralPath $localSettingsPath) {
+    Remove-Item -LiteralPath $localSettingsPath -Force
+    Write-Warning "Removed stale local settings override: $localSettingsPath"
+}
+
 $settingsPath = Join-Path $InstallPath "appsettings.json"
 $settings = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $settings.Agent.LogPath = $LogPath

@@ -1,12 +1,14 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 
 namespace BifitReport.Agent.Configuration;
 
-public sealed class ConfigurationValidator :
+public sealed class ConfigurationValidator(IConfiguration configuration) :
     IValidateOptions<AgentOptions>,
     IValidateOptions<DeliveryOptions>,
     IValidateOptions<VkOptions>,
-    IValidateOptions<ReportOptions>
+    IValidateOptions<ReportOptions>,
+    IValidateOptions<ArchiveOptions>
 {
     public ValidateOptionsResult Validate(string? name, AgentOptions options)
     {
@@ -38,7 +40,12 @@ public sealed class ConfigurationValidator :
         }
 
         if (string.IsNullOrWhiteSpace(options.ApiVersion)) failures.Add("Vk:ApiVersion не задан.");
-        if (options.PeerIds.Any(static id => id == 0)) failures.Add("Vk:PeerIds не должен содержать 0.");
+        if (options.PeerIds.Any(static id => id <= 0)) failures.Add("Vk:PeerIds не должен содержать нулевые или отрицательные значения.");
+        if (options.PeerIds.Count == 0 && IsVkDeliveryConfigured())
+        {
+            failures.Add("Vk:PeerIds должен содержать хотя бы одного получателя при Delivery:Mode = VK.");
+        }
+
         if (options.TimeoutSeconds is < 2 or > 120) failures.Add("Vk:TimeoutSeconds должен быть от 2 до 120.");
         if (options.MaximumRetryDelayMinutes is < 1 or > 1440) failures.Add("Vk:MaximumRetryDelayMinutes должен быть от 1 до 1440.");
         return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
@@ -51,5 +58,106 @@ public sealed class ConfigurationValidator :
         if (options.PeriodicSummaryMinutes is < 5 or > 1440) failures.Add("Reports:PeriodicSummaryMinutes должен быть от 5 до 1440.");
         if (options.PendingPaymentLifetimeMinutes is < 1 or > 120) failures.Add("Reports:PendingPaymentLifetimeMinutes должен быть от 1 до 120.");
         return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
+    }
+
+    public ValidateOptionsResult Validate(string? name, ArchiveOptions options)
+    {
+        if (!options.Enabled) return ValidateOptionsResult.Success;
+
+        var failures = new List<string>();
+        if (string.IsNullOrWhiteSpace(options.Destination))
+        {
+            failures.Add("Archive:Destination не задан.");
+        }
+
+        if (options.Sources.Count == 0)
+        {
+            failures.Add("Archive:Sources должен содержать хотя бы один каталог журналов.");
+        }
+
+        if (options.Patterns.Count == 0 || options.Patterns.Any(string.IsNullOrWhiteSpace))
+        {
+            failures.Add("Archive:Patterns должен содержать хотя бы одну непустую маску файла.");
+        }
+
+        if (options.MinFileAgeMinutes is < 0 or > 1440)
+        {
+            failures.Add("Archive:MinFileAgeMinutes должен быть от 0 до 1440.");
+        }
+
+        if (options.PollIntervalMinutes is < 1 or > 1440)
+        {
+            failures.Add("Archive:PollIntervalMinutes должен быть от 1 до 1440.");
+        }
+
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var normalizedSources = new List<(string Name, string Path)>();
+        foreach (var source in options.Sources)
+        {
+            var sourceName = source.Name?.Trim() ?? string.Empty;
+            if (sourceName.Length == 0)
+            {
+                failures.Add("Archive:Sources:Name не задан.");
+            }
+            else if (sourceName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                failures.Add($"Archive:Sources:Name «{sourceName}» содержит недопустимые для имени каталога символы.");
+            }
+            else if (!names.Add(sourceName))
+            {
+                failures.Add($"Archive:Sources содержит повторяющееся имя «{sourceName}».");
+            }
+
+            if (string.IsNullOrWhiteSpace(source.Path))
+            {
+                failures.Add($"Archive:Sources:Path не задан для «{sourceName}».");
+            }
+            else if (TryNormalizePath(source.Path, out var sourcePath))
+            {
+                normalizedSources.Add((sourceName, sourcePath));
+            }
+            else
+            {
+                failures.Add($"Archive:Sources:Path «{source.Path}» имеет недопустимый формат.");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.Destination) &&
+            TryNormalizePath(options.Destination, out var destination))
+        {
+            foreach (var source in normalizedSources)
+            {
+                if (IsSameOrInside(destination, source.Path))
+                {
+                    failures.Add($"Archive:Destination не должен находиться внутри источника «{source.Name}».");
+                }
+            }
+        }
+
+        return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
+    }
+
+    private bool IsVkDeliveryConfigured() =>
+        string.Equals(configuration["Delivery:Mode"], "VK", StringComparison.OrdinalIgnoreCase);
+
+    private static bool TryNormalizePath(string path, out string normalized)
+    {
+        try
+        {
+            normalized = Path.GetFullPath(Environment.ExpandEnvironmentVariables(path));
+            return true;
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            normalized = string.Empty;
+            return false;
+        }
+    }
+
+    private static bool IsSameOrInside(string candidate, string parent)
+    {
+        var parentPath = Path.TrimEndingDirectorySeparator(parent) + Path.DirectorySeparatorChar;
+        var candidatePath = Path.TrimEndingDirectorySeparator(candidate) + Path.DirectorySeparatorChar;
+        return candidatePath.StartsWith(parentPath, StringComparison.OrdinalIgnoreCase);
     }
 }

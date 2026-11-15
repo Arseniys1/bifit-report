@@ -8,6 +8,9 @@ namespace BifitReport.Agent.Delivery;
 
 public sealed class VkApiClient : IDisposable
 {
+    /// <summary>VK принимает не более 4096 символов; оставляем небольшой запас.</summary>
+    private const int MaximumTextLength = 4_000;
+
     private readonly VkOptions _options;
     private readonly VkTokenProvider _tokenProvider;
     private readonly ILogger<VkApiClient> _logger;
@@ -23,7 +26,7 @@ public sealed class VkApiClient : IDisposable
         _logger = logger;
         _httpClient = new HttpClient
         {
-            BaseAddress = new Uri(_options.ApiBaseUrl, UriKind.Absolute),
+            BaseAddress = new Uri(_options.NormalizedApiBaseUrl, UriKind.Absolute),
             Timeout = TimeSpan.FromSeconds(_options.TimeoutSeconds)
         };
     }
@@ -36,13 +39,14 @@ public sealed class VkApiClient : IDisposable
     {
         try
         {
+            var messageText = FitToVkLimit(messageId, text);
             using var content = new FormUrlEncodedContent(new Dictionary<string, string>
             {
                 ["access_token"] = _tokenProvider.GetToken(),
                 ["v"] = _options.ApiVersion,
                 ["peer_id"] = peerId.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ["random_id"] = CreateRandomId(messageId, peerId).ToString(System.Globalization.CultureInfo.InvariantCulture),
-                ["message"] = text
+                ["message"] = messageText
             });
 
             using var response = await _httpClient.PostAsync("messages.send", content, cancellationToken);
@@ -96,6 +100,18 @@ public sealed class VkApiClient : IDisposable
     }
 
     public void Dispose() => _httpClient.Dispose();
+
+    private string FitToVkLimit(string messageId, string text)
+    {
+        if (text.Length <= MaximumTextLength) return text;
+
+        _logger.LogWarning(
+            "Текст отчёта {MessageId} сокращён с {OriginalLength} до {MaximumLength} символов из-за лимита VK.",
+            messageId,
+            text.Length,
+            MaximumTextLength);
+        return text[..(MaximumTextLength - 1)] + "…";
+    }
 
     private static int CreateRandomId(string messageId, long peerId)
     {

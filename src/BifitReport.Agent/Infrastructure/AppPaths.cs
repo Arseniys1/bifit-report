@@ -14,6 +14,7 @@ public sealed class AppPaths
         TailCheckpointPath = Path.Combine(StateDirectory, "tail-checkpoint.json");
         ReportStatePath = Path.Combine(StateDirectory, "report-state.json");
         HealthStatusPath = Path.Combine(StateDirectory, "status.json");
+        ArchiveStatusPath = Path.Combine(StateDirectory, "archive-status.json");
         PreviewFilePath = Path.Combine(StateDirectory, deliveryOptions.Value.PreviewFileName);
 
         Directory.CreateDirectory(StateDirectory);
@@ -34,6 +35,8 @@ public sealed class AppPaths
     public string ReportStatePath { get; }
 
     public string HealthStatusPath { get; }
+
+    public string ArchiveStatusPath { get; }
 
     public string PreviewFilePath { get; }
 

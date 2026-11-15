@@ -46,13 +46,16 @@ public sealed class DiskMessageQueue(
 
     public async Task<OutboundMessage?> GetNextReadyAsync(DateTimeOffset now, CancellationToken cancellationToken)
     {
-        foreach (var path in Directory.EnumerateFiles(paths.PendingQueueDirectory, "*.json").OrderBy(static value => value, StringComparer.Ordinal))
+        // Файлы очереди названы хешами, поэтому порядок чтения должен задаваться временем
+        // создания отчёта, иначе сообщения об открытии и закрытии смены приходят вразнобой.
+        var ready = new List<OutboundMessage>();
+        foreach (var path in Directory.EnumerateFiles(paths.PendingQueueDirectory, "*.json"))
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
                 var message = await jsonFile.ReadAsync<OutboundMessage>(path, cancellationToken);
-                if (message is not null && message.NextAttemptAt <= now) return message;
+                if (message is not null && message.NextAttemptAt <= now) ready.Add(message);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
             {
@@ -60,7 +63,10 @@ public sealed class DiskMessageQueue(
             }
         }
 
-        return null;
+        return ready
+            .OrderBy(static message => message.CreatedAt)
+            .ThenBy(static message => message.Id, StringComparer.Ordinal)
+            .FirstOrDefault();
     }
 
     public Task UpdateAsync(OutboundMessage message, CancellationToken cancellationToken) =>

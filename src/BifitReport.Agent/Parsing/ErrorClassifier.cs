@@ -34,6 +34,24 @@ public sealed class ErrorClassifier
             return new("Маркировка", IsCritical: true);
         }
 
+        if (Contains(source, "TSPIoT") ||
+            ContainsAny(text, "Ошибка инициализации плагина", "plugin initialization"))
+        {
+            return new("Плагин кассы", IsCritical: true);
+        }
+
+        if (Contains(source, "FatalExceptionHandler") ||
+            ContainsAny(text, "Непредвиденная ошибка", "Unhandled exception", "Uncaught exception"))
+        {
+            return new("Критический сбой кассы", IsCritical: true);
+        }
+
+        if (ContainsAny(text, "DB error", "error_db", "database error") ||
+            ContainsAny(source, ".db.", "ReceiptRecords") && ContainsAny(text, "ошиб", "error", "failed"))
+        {
+            return new("База данных кассы", IsCritical: true);
+        }
+
         if (ContainsAny(text, "OutOfMemory", "database is locked", "поврежд", "corrupt"))
         {
             return new("Системная ошибка кассы", IsCritical: true);
