@@ -78,8 +78,9 @@ internal static class SelfTest
                 try
                 {
                     var vk = new VkClient(config);
+                    var report = vk.Check();
                     lines.Add("VK: OK");
-                    lines.Add(vk.Check().Trim());
+                    lines.Add(report.Trim());
                 }
                 catch (Exception exception)
                 {

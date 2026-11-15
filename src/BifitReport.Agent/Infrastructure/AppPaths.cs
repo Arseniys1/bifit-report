@@ -11,6 +11,7 @@ public sealed class AppPaths
         QueueDirectory = Path.Combine(StateDirectory, "queue");
         PendingQueueDirectory = Path.Combine(QueueDirectory, "pending");
         SentQueueDirectory = Path.Combine(QueueDirectory, "sent");
+        FailedQueueDirectory = Path.Combine(QueueDirectory, "failed");
         TailCheckpointPath = Path.Combine(StateDirectory, "tail-checkpoint.json");
         ReportStatePath = Path.Combine(StateDirectory, "report-state.json");
         HealthStatusPath = Path.Combine(StateDirectory, "status.json");
@@ -20,6 +21,7 @@ public sealed class AppPaths
         Directory.CreateDirectory(StateDirectory);
         Directory.CreateDirectory(PendingQueueDirectory);
         Directory.CreateDirectory(SentQueueDirectory);
+        Directory.CreateDirectory(FailedQueueDirectory);
     }
 
     public string StateDirectory { get; }
@@ -29,6 +31,8 @@ public sealed class AppPaths
     public string PendingQueueDirectory { get; }
 
     public string SentQueueDirectory { get; }
+
+    public string FailedQueueDirectory { get; }
 
     public string TailCheckpointPath { get; }
 

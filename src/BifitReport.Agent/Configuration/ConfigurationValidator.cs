@@ -48,6 +48,7 @@ public sealed class ConfigurationValidator(IConfiguration configuration) :
 
         if (options.TimeoutSeconds is < 2 or > 120) failures.Add("Vk:TimeoutSeconds должен быть от 2 до 120.");
         if (options.MaximumRetryDelayMinutes is < 1 or > 1440) failures.Add("Vk:MaximumRetryDelayMinutes должен быть от 1 до 1440.");
+        if (options.DeadLetterAttempts is < 1 or > 100) failures.Add("Vk:DeadLetterAttempts должен быть от 1 до 100.");
         return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
     }
 

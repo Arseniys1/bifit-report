@@ -88,11 +88,10 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 Write-Host "`n== Installer (Inno Setup) ==" -ForegroundColor Cyan
 $isccCandidates = @()
 if ($env:ISCC_PATH) { $isccCandidates += $env:ISCC_PATH }
-$isccCandidates += @(
-    (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
-    (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"),
-    (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe")
-)
+$programFilesX86 = ${env:ProgramFiles(x86)}
+if ($programFilesX86) { $isccCandidates += (Join-Path $programFilesX86 "Inno Setup 6\ISCC.exe") }
+if ($env:ProgramFiles) { $isccCandidates += (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe") }
+if ($env:LOCALAPPDATA) { $isccCandidates += (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe") }
 foreach ($uninstallKey in @(
     "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1",
     "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1",

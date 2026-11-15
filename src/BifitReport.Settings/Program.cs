@@ -113,6 +113,38 @@ internal static class Program
         }
     }
 
-    private static string QuoteArgument(string value) =>
-        "\"" + value.Replace("\"", "\\\"") + "\"";
+    private static string QuoteArgument(string value)
+    {
+        // Правила разбора командной строки Windows: обратные слеши перед закрывающей
+        // кавычкой удваиваются, иначе путь вида "D:\test\" ломает аргумент.
+        var builder = new System.Text.StringBuilder("\"");
+        var backslashes = 0;
+        foreach (var symbol in value)
+        {
+            if (symbol == '\\')
+            {
+                backslashes++;
+                continue;
+            }
+
+            if (symbol == '"')
+            {
+                builder.Append('\\', backslashes * 2 + 1).Append('"');
+                backslashes = 0;
+                continue;
+            }
+
+            if (backslashes > 0)
+            {
+                builder.Append('\\', backslashes);
+                backslashes = 0;
+            }
+
+            builder.Append(symbol);
+        }
+
+        if (backslashes > 0) builder.Append('\\', backslashes * 2);
+        builder.Append('"');
+        return builder.ToString();
+    }
 }

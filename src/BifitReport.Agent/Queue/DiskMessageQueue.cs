@@ -20,11 +20,12 @@ public sealed class DiskMessageQueue(
         var id = Hash(deduplicationKey);
         var pendingPath = PendingPath(id);
         var sentPath = SentPath(id);
+        var failedPath = FailedPath(id);
 
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            if (File.Exists(pendingPath) || File.Exists(sentPath)) return false;
+            if (File.Exists(pendingPath) || File.Exists(sentPath) || File.Exists(failedPath)) return false;
 
             var message = new OutboundMessage
             {
@@ -48,8 +49,21 @@ public sealed class DiskMessageQueue(
     {
         // Файлы очереди названы хешами, поэтому порядок чтения должен задаваться временем
         // создания отчёта, иначе сообщения об открытии и закрытии смены приходят вразнобой.
+        string[] files;
+        try
+        {
+            files = Directory.GetFiles(paths.PendingQueueDirectory, "*.json");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Недоступный каталог очереди не должен останавливать доставку навсегда:
+            // следующая попытка будет через несколько секунд.
+            logger.LogWarning(exception, "Каталог очереди недоступен: {Directory}", paths.PendingQueueDirectory);
+            return null;
+        }
+
         var ready = new List<OutboundMessage>();
-        foreach (var path in Directory.EnumerateFiles(paths.PendingQueueDirectory, "*.json"))
+        foreach (var path in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
@@ -69,8 +83,18 @@ public sealed class DiskMessageQueue(
             .FirstOrDefault();
     }
 
-    public Task UpdateAsync(OutboundMessage message, CancellationToken cancellationToken) =>
-        jsonFile.WriteAsync(PendingPath(message.Id), message, cancellationToken);
+    public async Task UpdateAsync(OutboundMessage message, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await jsonFile.WriteAsync(PendingPath(message.Id), message, cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
 
     public async Task CompleteAsync(OutboundMessage message, string mode, CancellationToken cancellationToken)
     {
@@ -82,9 +106,53 @@ public sealed class DiskMessageQueue(
             DeliveredAt = DateTimeOffset.Now
         };
 
-        await jsonFile.WriteAsync(SentPath(message.Id), marker, cancellationToken);
-        var pendingPath = PendingPath(message.Id);
-        if (File.Exists(pendingPath)) File.Delete(pendingPath);
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await jsonFile.WriteAsync(SentPath(message.Id), marker, cancellationToken);
+            var pendingPath = PendingPath(message.Id);
+            if (File.Exists(pendingPath)) File.Delete(pendingPath);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Переносит сообщение в <c>queue\failed</c>: повторять его бессмысленно, но и терять
+    /// текст отчёта нельзя — администратор должен увидеть, что именно не доставлено.
+    /// </summary>
+    public async Task FailAsync(OutboundMessage message, string reason, CancellationToken cancellationToken)
+    {
+        var marker = new FailedMarker
+        {
+            Id = message.Id,
+            DeduplicationKey = message.DeduplicationKey,
+            Reason = reason,
+            Attempts = message.Attempts,
+            CreatedAt = message.CreatedAt,
+            FailedAt = DateTimeOffset.Now,
+            Text = message.Text
+        };
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await jsonFile.WriteAsync(FailedPath(message.Id), marker, cancellationToken);
+            var pendingPath = PendingPath(message.Id);
+            if (File.Exists(pendingPath)) File.Delete(pendingPath);
+            logger.LogError(
+                "Отчёт {MessageId} снят с повторов после {Attempts} попыток ({Reason}); файл остался в {Directory}.",
+                message.Id,
+                message.Attempts,
+                reason,
+                paths.FailedQueueDirectory);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async Task AppendPreviewAsync(OutboundMessage message, CancellationToken cancellationToken)
@@ -98,7 +166,24 @@ public sealed class DiskMessageQueue(
     public void CleanupSentMarkers()
     {
         var threshold = DateTime.UtcNow.AddDays(-_deliveryOptions.SentMarkerRetentionDays);
-        foreach (var path in Directory.EnumerateFiles(paths.SentQueueDirectory, "*.json"))
+        CleanupDirectory(paths.SentQueueDirectory, threshold, "маркер доставки");
+        CleanupDirectory(paths.FailedQueueDirectory, threshold, "файл недоставленного отчёта");
+    }
+
+    private void CleanupDirectory(string directory, DateTime threshold, string description)
+    {
+        string[] files;
+        try
+        {
+            files = Directory.GetFiles(directory, "*.json");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            logger.LogDebug(exception, "Каталог {Directory} недоступен для очистки.", directory);
+            return;
+        }
+
+        foreach (var path in files)
         {
             try
             {
@@ -106,7 +191,11 @@ public sealed class DiskMessageQueue(
             }
             catch (IOException exception)
             {
-                logger.LogDebug(exception, "Не удалось удалить старый маркер доставки {Marker}", Path.GetFileName(path));
+                logger.LogDebug(exception, "Не удалось удалить старый {Description} {Marker}", description, Path.GetFileName(path));
+            }
+            catch (UnauthorizedAccessException exception)
+            {
+                logger.LogDebug(exception, "Нет доступа к старому {Description} {Marker}", description, Path.GetFileName(path));
             }
         }
     }
@@ -114,6 +203,8 @@ public sealed class DiskMessageQueue(
     private string PendingPath(string id) => Path.Combine(paths.PendingQueueDirectory, id + ".json");
 
     private string SentPath(string id) => Path.Combine(paths.SentQueueDirectory, id + ".json");
+
+    private string FailedPath(string id) => Path.Combine(paths.FailedQueueDirectory, id + ".json");
 
     private static string Hash(string value)
     {
@@ -127,5 +218,16 @@ public sealed class DiskMessageQueue(
         public string DeduplicationKey { get; set; } = string.Empty;
         public string Mode { get; set; } = string.Empty;
         public DateTimeOffset DeliveredAt { get; set; }
+    }
+
+    private sealed class FailedMarker
+    {
+        public string Id { get; set; } = string.Empty;
+        public string DeduplicationKey { get; set; } = string.Empty;
+        public string Reason { get; set; } = string.Empty;
+        public int Attempts { get; set; }
+        public DateTimeOffset CreatedAt { get; set; }
+        public DateTimeOffset FailedAt { get; set; }
+        public string Text { get; set; } = string.Empty;
     }
 }

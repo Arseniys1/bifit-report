@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using BifitReport.Agent.Configuration;
 using BifitReport.Agent.Infrastructure;
@@ -12,9 +13,13 @@ public sealed class LogTailer(
     AppPaths paths,
     ILogger<LogTailer> logger)
 {
+    /// <summary>Сколько байт начала файла сравнивать, чтобы заметить подмену журнала.</summary>
+    private const int MaximumHeadSignatureBytes = 1_024;
+
     private readonly AgentOptions _options = options.Value;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private TailCheckpoint? _checkpoint;
+    private TailCheckpoint? _committed;
     private bool _missingLogWasReported;
 
     public async Task<TailBatch> ReadAsync(CancellationToken cancellationToken)
@@ -23,7 +28,11 @@ public sealed class LogTailer(
         try
         {
             var logPath = AppPaths.Normalize(_options.LogPath);
-            _checkpoint ??= await LoadCheckpointAsync(logPath, cancellationToken);
+            if (_checkpoint is null)
+            {
+                _checkpoint = await LoadCheckpointAsync(logPath, cancellationToken);
+                _committed = _checkpoint.Clone();
+            }
 
             if (!File.Exists(logPath))
             {
@@ -41,24 +50,30 @@ public sealed class LogTailer(
             var identity = CreateIdentity(fileInfo);
             var checkpoint = _checkpoint.Clone();
 
-            if (!string.Equals(checkpoint.LogPath, logPath, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(checkpoint.LogPath, logPath, StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrEmpty(checkpoint.FileIdentity))
             {
-                checkpoint = CreateInitialCheckpoint(logPath, identity, fileInfo.Length);
+                checkpoint = await CreateInitialCheckpointAsync(logPath, identity, fileInfo.Length, cancellationToken);
             }
-            else if (string.IsNullOrEmpty(checkpoint.FileIdentity))
-            {
-                checkpoint = CreateInitialCheckpoint(logPath, identity, fileInfo.Length);
-            }
-            else if (!string.Equals(checkpoint.FileIdentity, identity, StringComparison.Ordinal) || fileInfo.Length < checkpoint.Position)
+            else if (await IsRotationAsync(checkpoint, logPath, identity, fileInfo.Length, cancellationToken))
             {
                 logger.LogInformation("Обнаружена ротация журнала, чтение нового файла начинается с начала.");
                 checkpoint = new TailCheckpoint
                 {
                     LogPath = logPath,
                     FileIdentity = identity,
+                    HeadSignature = await ComputeSignatureAsync(logPath, Math.Min(fileInfo.Length, MaximumHeadSignatureBytes), cancellationToken),
+                    HeadSignatureLength = (int)Math.Min(fileInfo.Length, MaximumHeadSignatureBytes),
                     Position = 0,
                     PendingStartPosition = 0
                 };
+            }
+            else if (checkpoint.HeadSignatureLength == 0 && fileInfo.Length > 0)
+            {
+                // Файл был пустым, когда создавалась контрольная точка: запоминаем
+                // фактическое начало, чтобы не принять первые строки за ротацию.
+                checkpoint.HeadSignatureLength = (int)Math.Min(fileInfo.Length, MaximumHeadSignatureBytes);
+                checkpoint.HeadSignature = await ComputeSignatureAsync(logPath, checkpoint.HeadSignatureLength, cancellationToken);
             }
 
             if (checkpoint.Position > fileInfo.Length) checkpoint.Position = fileInfo.Length;
@@ -148,8 +163,16 @@ public sealed class LogTailer(
         await _gate.WaitAsync(cancellationToken);
         try
         {
+            // Позиция не изменилась — не переписываем файл состояния каждые две секунды.
+            if (_committed is not null && _committed.HasSameReadingState(batch.Checkpoint))
+            {
+                _checkpoint = batch.Checkpoint.Clone();
+                return;
+            }
+
             await jsonFile.WriteAsync(paths.TailCheckpointPath, batch.Checkpoint, cancellationToken);
             _checkpoint = batch.Checkpoint.Clone();
+            _committed = batch.Checkpoint.Clone();
         }
         finally
         {
@@ -171,12 +194,13 @@ public sealed class LogTailer(
 
         if (!File.Exists(logPath)) return new TailCheckpoint { LogPath = logPath };
         var fileInfo = new FileInfo(logPath);
-        return CreateInitialCheckpoint(logPath, CreateIdentity(fileInfo), fileInfo.Length);
+        return await CreateInitialCheckpointAsync(logPath, CreateIdentity(fileInfo), fileInfo.Length, cancellationToken);
     }
 
-    private TailCheckpoint CreateInitialCheckpoint(string logPath, string identity, long fileLength)
+    private async Task<TailCheckpoint> CreateInitialCheckpointAsync(string logPath, string identity, long fileLength, CancellationToken cancellationToken)
     {
         var position = _options.StartFromEndOnFirstRun ? fileLength : 0;
+        var signatureLength = (int)Math.Min(fileLength, MaximumHeadSignatureBytes);
         logger.LogInformation(
             "Создана начальная позиция чтения журнала {Position}. Исторические строки {HistoryMode}.",
             position,
@@ -185,10 +209,60 @@ public sealed class LogTailer(
         {
             LogPath = logPath,
             FileIdentity = identity,
+            HeadSignature = await ComputeSignatureAsync(logPath, signatureLength, cancellationToken),
+            HeadSignatureLength = signatureLength,
             Position = position,
             PendingStartPosition = position,
             UpdatedAt = DateTimeOffset.Now
         };
+    }
+
+    /// <summary>
+    /// Ротация определяется по трём признакам: сменилась идентичность файла, файл стал
+    /// короче сохранённой позиции или изменилось начало файла. Последняя проверка нужна
+    /// потому, что NTFS сохраняет время создания при пересоздании файла с тем же именем,
+    /// а некоторые приложения переписывают журнал на месте.
+    /// </summary>
+    private static async Task<bool> IsRotationAsync(
+        TailCheckpoint checkpoint,
+        string logPath,
+        string identity,
+        long fileLength,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(checkpoint.FileIdentity, identity, StringComparison.Ordinal)) return true;
+        if (fileLength < checkpoint.Position) return true;
+
+        if (checkpoint.HeadSignatureLength <= 0 || checkpoint.HeadSignature.Length == 0) return false;
+        if (fileLength < checkpoint.HeadSignatureLength) return false;
+
+        var signature = await ComputeSignatureAsync(logPath, checkpoint.HeadSignatureLength, cancellationToken);
+        return !string.Equals(checkpoint.HeadSignature, signature, StringComparison.Ordinal);
+    }
+
+    private static async Task<string> ComputeSignatureAsync(string path, long length, CancellationToken cancellationToken)
+    {
+        if (length <= 0) return string.Empty;
+
+        var buffer = new byte[length];
+        var read = 0;
+        await using (var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            bufferSize: 4_096,
+            options: FileOptions.Asynchronous | FileOptions.SequentialScan))
+        {
+            while (read < buffer.Length)
+            {
+                var chunk = await stream.ReadAsync(buffer.AsMemory(read), cancellationToken);
+                if (chunk == 0) break;
+                read += chunk;
+            }
+        }
+
+        return read == 0 ? string.Empty : Convert.ToHexString(SHA256.HashData(buffer.AsSpan(0, read)));
     }
 
     private static string CreateIdentity(FileInfo fileInfo) =>

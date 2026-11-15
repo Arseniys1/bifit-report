@@ -14,6 +14,9 @@ public sealed class ReportAggregator(
     DiskMessageQueue queue,
     ILogger<ReportAggregator> logger)
 {
+    /// <summary>Значение идентификатора смены, когда агент не видел её открытия.</summary>
+    private const string UnknownShiftId = "не определена";
+
     private readonly AgentOptions _agentOptions = agentOptions.Value;
     private readonly ReportOptions _reportOptions = reportOptions.Value;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -99,27 +102,40 @@ public sealed class ReportAggregator(
 
     private async Task HandleShiftOpenedAsync(BifitEvent bifitEvent, CancellationToken cancellationToken)
     {
-        var internalId = bifitEvent.ShiftInternalId ?? "не определена";
-        if (_state!.CurrentShift is not null && _state.CurrentShift.InternalId == internalId)
+        var internalId = bifitEvent.ShiftInternalId ?? UnknownShiftId;
+        var current = _state!.CurrentShift;
+
+        if (current is not null && string.Equals(current.InternalId, internalId, StringComparison.Ordinal))
         {
-            _state.CurrentShift.ExternalId = bifitEvent.ShiftExternalId ?? _state.CurrentShift.ExternalId;
-            _state.CurrentShift.OpenedAt = bifitEvent.ShiftOpenedAt ?? _state.CurrentShift.OpenedAt;
-            _state.CurrentShift.IsInferred = false;
+            current.ExternalId = bifitEvent.ShiftExternalId ?? current.ExternalId;
+            current.OpenedAt = bifitEvent.ShiftOpenedAt ?? current.OpenedAt;
+            current.IsInferred = false;
             return;
         }
 
-        if (_state.CurrentShift is not null)
+        if (current is not null && IsSameUnobservedShift(current, bifitEvent))
+        {
+            // Агент начал работать в середине смены: открытие он не видел, но счётчики
+            // уже накоплены. Принимаем идентификаторы настоящей смены вместо того,
+            // чтобы обнулить их «перехватом» новой.
+            current.InternalId = internalId;
+            current.ExternalId = bifitEvent.ShiftExternalId ?? current.ExternalId;
+            current.OpenedAt = bifitEvent.ShiftOpenedAt ?? current.OpenedAt;
+            return;
+        }
+
+        if (current is not null)
         {
             await queue.EnqueueAsync(
-                formatter.FormatInterruptedShift(_state.CurrentShift, bifitEvent.Timestamp),
-                $"shift-interrupted:{_state.CurrentShift.InternalId}:{internalId}",
+                formatter.FormatInterruptedShift(current, bifitEvent.Timestamp),
+                $"shift-interrupted:{current.InternalId}:{internalId}",
                 cancellationToken);
         }
 
         _state.CurrentShift = new ShiftReportState
         {
             InternalId = internalId,
-            ExternalId = bifitEvent.ShiftExternalId ?? "не определена",
+            ExternalId = bifitEvent.ShiftExternalId ?? UnknownShiftId,
             OpenedAt = bifitEvent.ShiftOpenedAt ?? bifitEvent.Timestamp
         };
         _state.LastPeriodicSummaryAt = null;
@@ -135,19 +151,41 @@ public sealed class ReportAggregator(
 
     private async Task HandleShiftClosedAsync(BifitEvent bifitEvent, CancellationToken cancellationToken)
     {
-        var shift = _state!.CurrentShift;
-        if (shift is null || shift.InternalId != bifitEvent.ShiftInternalId)
+        var closedAt = bifitEvent.ShiftClosedAt ?? bifitEvent.Timestamp;
+        var current = _state!.CurrentShift;
+        var shouldClearCurrentShift = false;
+        ShiftReportState shift;
+
+        if (current is not null && string.Equals(current.InternalId, bifitEvent.ShiftInternalId, StringComparison.Ordinal))
         {
+            shift = current;
+            shouldClearCurrentShift = true;
+        }
+        else if (current is not null && IsUnknownShiftId(current.InternalId) && closedAt >= current.OpenedAt)
+        {
+            // Смена была «выведена» из операций и закрывается впервые: сохраняем
+            // её счётчики, принимая идентификаторы из строки закрытия.
+            current.InternalId = bifitEvent.ShiftInternalId ?? current.InternalId;
+            current.ExternalId = bifitEvent.ShiftExternalId ?? current.ExternalId;
+            current.OpenedAt = bifitEvent.ShiftOpenedAt ?? current.OpenedAt;
+            current.IsInferred = true;
+            shift = current;
+            shouldClearCurrentShift = true;
+        }
+        else
+        {
+            // Закрывается другая смена (например, запоздалая синхронизация уже
+            // закрытой сессии): отчёт по ней отправляем, но текущую смену не трогаем.
             shift = new ShiftReportState
             {
-                InternalId = bifitEvent.ShiftInternalId ?? "не определена",
-                ExternalId = bifitEvent.ShiftExternalId ?? "не определена",
+                InternalId = bifitEvent.ShiftInternalId ?? UnknownShiftId,
+                ExternalId = bifitEvent.ShiftExternalId ?? UnknownShiftId,
                 OpenedAt = bifitEvent.ShiftOpenedAt ?? bifitEvent.Timestamp,
                 IsInferred = true
             };
         }
 
-        shift.ClosedAt = bifitEvent.ShiftClosedAt ?? bifitEvent.Timestamp;
+        shift.ClosedAt = closedAt;
         if (_reportOptions.SendShiftClosed)
         {
             await queue.EnqueueAsync(
@@ -156,8 +194,11 @@ public sealed class ReportAggregator(
                 cancellationToken);
         }
 
-        _state.CurrentShift = null;
-        _state.LastPeriodicSummaryAt = null;
+        if (shouldClearCurrentShift)
+        {
+            _state.CurrentShift = null;
+            _state.LastPeriodicSummaryAt = null;
+        }
     }
 
     private void HandlePaymentStarted(BifitEvent bifitEvent)
@@ -228,10 +269,27 @@ public sealed class ReportAggregator(
     {
         _state!.CurrentShift ??= new ShiftReportState
         {
+            InternalId = UnknownShiftId,
+            ExternalId = UnknownShiftId,
             OpenedAt = timestamp,
             IsInferred = true
         };
         return _state.CurrentShift;
+    }
+
+    private static bool IsUnknownShiftId(string? internalId) =>
+        string.IsNullOrEmpty(internalId) || string.Equals(internalId, UnknownShiftId, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Проверяет, что событие открытия относится к той же смене, открытие которой агент
+    /// не наблюдал: смена выведена из операций, а время открытия в журнале не позже
+    /// времени первой наблюдённой операции.
+    /// </summary>
+    private static bool IsSameUnobservedShift(ShiftReportState current, BifitEvent bifitEvent)
+    {
+        if (!IsUnknownShiftId(current.InternalId)) return false;
+        if (bifitEvent.ShiftOpenedAt is null) return true;
+        return bifitEvent.ShiftOpenedAt <= current.OpenedAt;
     }
 
     private async Task EnsureLoadedAsync(CancellationToken cancellationToken)

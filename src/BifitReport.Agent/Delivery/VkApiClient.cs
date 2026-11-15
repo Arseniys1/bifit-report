@@ -53,8 +53,13 @@ public sealed class VkApiClient : IDisposable
             var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("VK API вернул HTTP {StatusCode} для получателя {PeerId}.", (int)response.StatusCode, peerId);
-                return new VkSendResult(false, true, $"http_{(int)response.StatusCode}");
+                var statusCode = (int)response.StatusCode;
+
+                // 4xx (кроме 408/429) — это ошибка запроса или доступа, повторять её
+                // каждый час бессмысленно: пусть сработает ограничение попыток.
+                var retryable = statusCode is 408 or 429 || statusCode >= 500;
+                _logger.LogWarning("VK API вернул HTTP {StatusCode} для получателя {PeerId}.", statusCode, peerId);
+                return new VkSendResult(false, retryable, $"http_{statusCode}");
             }
 
             using var document = JsonDocument.Parse(responseBody);
@@ -105,12 +110,16 @@ public sealed class VkApiClient : IDisposable
     {
         if (text.Length <= MaximumTextLength) return text;
 
+        var cut = MaximumTextLength - 1;
+        // Не разрываем суррогатную пару: иначе последний символ станет невалидным.
+        if (char.IsHighSurrogate(text[cut - 1])) cut--;
+
         _logger.LogWarning(
             "Текст отчёта {MessageId} сокращён с {OriginalLength} до {MaximumLength} символов из-за лимита VK.",
             messageId,
             text.Length,
             MaximumTextLength);
-        return text[..(MaximumTextLength - 1)] + "…";
+        return text[..cut] + "…";
     }
 
     private static int CreateRandomId(string messageId, long peerId)

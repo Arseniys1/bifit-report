@@ -478,7 +478,13 @@ internal sealed class SettingsForm : Form
 
         var pending = CountFiles(IOPath.Combine(_config.StateDirectory, "queue", "pending"));
         var sent = CountFiles(IOPath.Combine(_config.StateDirectory, "queue", "sent"));
-        builder.AppendLine($"Очередь: ожидает {pending}, отправлено {sent}");
+        var failed = CountFiles(IOPath.Combine(_config.StateDirectory, "queue", "failed"));
+        builder.AppendLine($"Очередь: ожидает {pending}, отправлено {sent}, недоставлено {failed}");
+        if (failed > 0)
+        {
+            builder.AppendLine(
+                "Недоставленные отчёты лежат в queue\\failed: причина и текст сохранены в JSON-файлах.");
+        }
 
         _outputDiag.Text = builder.ToString();
     }
@@ -503,6 +509,17 @@ internal sealed class SettingsForm : Form
     private static void RestartService()
     {
         using var service = new ServiceController("BifitReport");
+
+        // Служба могла ещё останавливаться или запускаться: ждём, пока она перестанет
+        // быть «в процессе», иначе Stop/Start бросает InvalidOperationException.
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (service.Status is ServiceControllerStatus.StartPending or ServiceControllerStatus.StopPending &&
+               DateTime.UtcNow < deadline)
+        {
+            System.Threading.Thread.Sleep(200);
+            service.Refresh();
+        }
+
         if (service.Status != ServiceControllerStatus.Stopped)
         {
             service.Stop();

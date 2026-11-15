@@ -46,10 +46,23 @@ public sealed class LogIngestionWorker(
             catch (Exception exception)
             {
                 logger.LogError(exception, "Ошибка наблюдателя журнала; кассовое приложение не затронуто, чтение будет повторено.");
-                await healthStore.RecordWorkerErrorAsync(nameof(LogIngestionWorker), stoppingToken);
+                await RecordWorkerErrorAsync(stoppingToken);
             }
 
             await Task.Delay(_options.PollIntervalMilliseconds, stoppingToken);
+        }
+    }
+
+    private async Task RecordWorkerErrorAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await healthStore.RecordWorkerErrorAsync(nameof(LogIngestionWorker), cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            // Ошибка в обработчике ошибки не должна валить весь воркер и службу.
+            logger.LogWarning(exception, "Не удалось зафиксировать ошибку наблюдателя журнала.");
         }
     }
 }

@@ -18,17 +18,7 @@ public sealed class LogTailerTests : IDisposable
         var logPath = Path.Combine(_temporaryDirectory, "desktop.log");
         await File.WriteAllTextAsync(logPath, "first\nsecond", Encoding.UTF8);
 
-        var agent = Options.Create(new AgentOptions
-        {
-            LogPath = logPath,
-            StateDirectory = Path.Combine(_temporaryDirectory, "state"),
-            StartFromEndOnFirstRun = false
-        });
-        var delivery = Options.Create(new DeliveryOptions());
-        var json = new AtomicJsonFile();
-        var paths = new AppPaths(agent, delivery);
-        var tailer = new LogTailer(agent, json, paths, NullLogger<LogTailer>.Instance);
-
+        var tailer = CreateTailer(logPath, startFromEnd: false);
         var firstBatch = await tailer.ReadAsync(CancellationToken.None);
         Assert.Single(firstBatch.Records);
         Assert.Equal("first", firstBatch.Records[0].Text.TrimStart('\uFEFF'));
@@ -48,16 +38,7 @@ public sealed class LogTailerTests : IDisposable
         var logPath = Path.Combine(_temporaryDirectory, "desktop.log");
         await File.WriteAllTextAsync(logPath, "historical\n", Encoding.UTF8);
 
-        var agent = Options.Create(new AgentOptions
-        {
-            LogPath = logPath,
-            StateDirectory = Path.Combine(_temporaryDirectory, "state"),
-            StartFromEndOnFirstRun = true
-        });
-        var json = new AtomicJsonFile();
-        var paths = new AppPaths(agent, Options.Create(new DeliveryOptions()));
-        var tailer = new LogTailer(agent, json, paths, NullLogger<LogTailer>.Instance);
-
+        var tailer = CreateTailer(logPath, startFromEnd: true);
         Assert.Empty((await tailer.ReadAsync(CancellationToken.None)).Records);
         await File.AppendAllTextAsync(logPath, "live\n", Encoding.UTF8);
         var batch = await tailer.ReadAsync(CancellationToken.None);
@@ -71,15 +52,7 @@ public sealed class LogTailerTests : IDisposable
         Directory.CreateDirectory(_temporaryDirectory);
         var logPath = Path.Combine(_temporaryDirectory, "desktop.log");
         await File.WriteAllTextAsync(logPath, "retry-me\n", Encoding.UTF8);
-        var agent = Options.Create(new AgentOptions
-        {
-            LogPath = logPath,
-            StateDirectory = Path.Combine(_temporaryDirectory, "state"),
-            StartFromEndOnFirstRun = false
-        });
-        var json = new AtomicJsonFile();
-        var paths = new AppPaths(agent, Options.Create(new DeliveryOptions()));
-        var tailer = new LogTailer(agent, json, paths, NullLogger<LogTailer>.Instance);
+        var tailer = CreateTailer(logPath, startFromEnd: false);
 
         var firstBatch = await tailer.ReadAsync(CancellationToken.None);
         var retryBatch = await tailer.ReadAsync(CancellationToken.None);
@@ -94,15 +67,7 @@ public sealed class LogTailerTests : IDisposable
     {
         Directory.CreateDirectory(_temporaryDirectory);
         var logPath = Path.Combine(_temporaryDirectory, "desktop.log");
-        var agent = Options.Create(new AgentOptions
-        {
-            LogPath = logPath,
-            StateDirectory = Path.Combine(_temporaryDirectory, "state"),
-            StartFromEndOnFirstRun = true
-        });
-        var json = new AtomicJsonFile();
-        var paths = new AppPaths(agent, Options.Create(new DeliveryOptions()));
-        var tailer = new LogTailer(agent, json, paths, NullLogger<LogTailer>.Instance);
+        var tailer = CreateTailer(logPath, startFromEnd: true);
 
         Assert.False((await tailer.ReadAsync(CancellationToken.None)).LogExists);
         await File.WriteAllTextAsync(logPath, "historical\n", Encoding.UTF8);
@@ -110,6 +75,97 @@ public sealed class LogTailerTests : IDisposable
 
         Assert.Empty(firstExistingBatch.Records);
     }
+
+    [Fact]
+    public async Task DetectsRotationWhenCreationTimeIsPreservedAndFileIsLonger()
+    {
+        Directory.CreateDirectory(_temporaryDirectory);
+        var logPath = Path.Combine(_temporaryDirectory, "desktop.log");
+        await File.WriteAllTextAsync(logPath, "first\n", Encoding.UTF8);
+
+        var tailer = CreateTailer(logPath, startFromEnd: false);
+        var firstBatch = await tailer.ReadAsync(CancellationToken.None);
+        await tailer.CommitAsync(firstBatch, CancellationToken.None);
+
+        // NTFS сохраняет время создания при пересоздании файла с тем же именем
+        // (file system tunneling), поэтому длина файла тоже не помогает: новый файл длиннее.
+        var creationTime = File.GetCreationTimeUtc(logPath);
+        File.Move(logPath, Path.Combine(_temporaryDirectory, "desktop-1.log"));
+        await File.WriteAllTextAsync(logPath, "second\nthird\nfourth\n", Encoding.UTF8);
+        File.SetCreationTimeUtc(logPath, creationTime);
+
+        try
+        {
+            var batch = await tailer.ReadAsync(CancellationToken.None);
+            Assert.Equal(["second", "third", "fourth"], batch.Records.Select(record => record.Text));
+        }
+        finally
+        {
+            File.SetCreationTimeUtc(logPath, DateTime.UtcNow);
+        }
+    }
+
+    [Fact]
+    public async Task DetectsInPlaceTruncationAndRegrowBeforeNextPoll()
+    {
+        Directory.CreateDirectory(_temporaryDirectory);
+        var logPath = Path.Combine(_temporaryDirectory, "desktop.log");
+        await File.WriteAllTextAsync(logPath, "aaaa\nbbbb\n", Encoding.UTF8);
+
+        var tailer = CreateTailer(logPath, startFromEnd: false);
+        var firstBatch = await tailer.ReadAsync(CancellationToken.None);
+        await tailer.CommitAsync(firstBatch, CancellationToken.None);
+        Assert.Equal(new FileInfo(logPath).Length, firstBatch.Checkpoint.Position);
+
+        // Журнал переписан на месте и уже длиннее сохранённой позиции.
+        await File.WriteAllTextAsync(logPath, "cccc\ndddd\neeee\n", Encoding.UTF8);
+
+        var batch = await tailer.ReadAsync(CancellationToken.None);
+
+        Assert.Equal(["cccc", "dddd", "eeee"], batch.Records.Select(record => record.Text));
+    }
+
+    [Fact]
+    public async Task CheckpointIsNotRewrittenWhenNothingChanged()
+    {
+        Directory.CreateDirectory(_temporaryDirectory);
+        var logPath = Path.Combine(_temporaryDirectory, "desktop.log");
+        await File.WriteAllTextAsync(logPath, "only\n", Encoding.UTF8);
+
+        var agentOptions = CreateOptions(logPath, startFromEnd: false);
+        var json = new AtomicJsonFile();
+        var paths = new AppPaths(agentOptions, Options.Create(new DeliveryOptions()));
+        var tailer = new LogTailer(agentOptions, json, paths, NullLogger<LogTailer>.Instance);
+
+        var firstBatch = await tailer.ReadAsync(CancellationToken.None);
+        await tailer.CommitAsync(firstBatch, CancellationToken.None);
+        var savedAfterFirstCommit = await json.ReadAsync<TailCheckpoint>(paths.TailCheckpointPath, CancellationToken.None);
+        Assert.NotNull(savedAfterFirstCommit);
+
+        await Task.Delay(50);
+        var idleBatch = await tailer.ReadAsync(CancellationToken.None);
+        await tailer.CommitAsync(idleBatch, CancellationToken.None);
+        var savedAfterIdlePoll = await json.ReadAsync<TailCheckpoint>(paths.TailCheckpointPath, CancellationToken.None);
+
+        Assert.Equal(savedAfterFirstCommit.UpdatedAt, savedAfterIdlePoll!.UpdatedAt);
+        Assert.Equal(savedAfterFirstCommit.Position, savedAfterIdlePoll.Position);
+    }
+
+    private LogTailer CreateTailer(string logPath, bool startFromEnd)
+    {
+        var agentOptions = CreateOptions(logPath, startFromEnd);
+        var json = new AtomicJsonFile();
+        var paths = new AppPaths(agentOptions, Options.Create(new DeliveryOptions()));
+        return new LogTailer(agentOptions, json, paths, NullLogger<LogTailer>.Instance);
+    }
+
+    private IOptions<AgentOptions> CreateOptions(string logPath, bool startFromEnd) =>
+        Options.Create(new AgentOptions
+        {
+            LogPath = logPath,
+            StateDirectory = Path.Combine(_temporaryDirectory, "state"),
+            StartFromEndOnFirstRun = startFromEnd
+        });
 
     public void Dispose()
     {

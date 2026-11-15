@@ -1,3 +1,4 @@
+using System.Globalization;
 using BifitReport.Agent.Configuration;
 using BifitReport.Agent.Infrastructure;
 using BifitReport.Agent.Models;
@@ -12,6 +13,7 @@ namespace BifitReport.Agent.Tests;
 public sealed class ReportAggregatorTests : IDisposable
 {
     private readonly string _temporaryDirectory = Path.Combine(Path.GetTempPath(), "bifit-report-tests", Guid.NewGuid().ToString("N"));
+    private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-11-12T15:00:00+05:00", CultureInfo.InvariantCulture);
 
     [Fact]
     public async Task ErrorOutsideShiftDoesNotCreatePhantomShift()
@@ -27,7 +29,7 @@ public sealed class ReportAggregatorTests : IDisposable
             SafeMessage: "safe");
 
         await context.Aggregator.HandleAsync(bifitEvent, CancellationToken.None);
-        var state = await context.JsonFile.ReadAsync<ReportState>(context.Paths.ReportStatePath, CancellationToken.None);
+        var state = await ReadStateAsync(context);
 
         Assert.NotNull(state);
         Assert.Null(state.CurrentShift);
@@ -84,6 +86,138 @@ public sealed class ReportAggregatorTests : IDisposable
         });
 
         Assert.Contains("Данные неполные", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CloseOfUnobservedShiftKeepsObservedCounters()
+    {
+        var context = CreateContext();
+
+        // Агент поставлен в середине смены: открытия он не видел, но операции уже считает.
+        await context.Aggregator.HandleAsync(
+            new BifitEvent("receipt-1", BifitEventType.ReceiptRegistered, Now, "R", ReceiptId: "51665"),
+            CancellationToken.None);
+        await context.Aggregator.HandleAsync(
+            new BifitEvent("payment-1", BifitEventType.TerminalPaymentStarted, Now.AddMinutes(1), "T", Amount: 100m),
+            CancellationToken.None);
+        await context.Aggregator.HandleAsync(
+            new BifitEvent("payment-2", BifitEventType.TerminalPaymentCompleted, Now.AddMinutes(2), "T", Success: true),
+            CancellationToken.None);
+
+        await context.Aggregator.HandleAsync(
+            new BifitEvent(
+                "close-1",
+                BifitEventType.ShiftClosed,
+                Now.AddHours(8),
+                "ReceiptSessionService",
+                ShiftInternalId: "1411",
+                ShiftExternalId: "352",
+                ShiftOpenedAt: Now.AddHours(-6),
+                ShiftClosedAt: Now.AddHours(8)),
+            CancellationToken.None);
+
+        var state = await ReadStateAsync(context);
+        Assert.Null(state!.CurrentShift);
+
+        var messages = await ReadQueuedMessagesAsync(context);
+        var report = Assert.Single(messages);
+        Assert.Contains("внутренняя 1411", report, StringComparison.Ordinal);
+        Assert.Contains("Успешных чеков: 1", report, StringComparison.Ordinal);
+        Assert.Contains("100,00", report, StringComparison.Ordinal);
+        Assert.Contains("Данные неполные", report, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CloseOfAnotherShiftDoesNotDiscardCurrentShift()
+    {
+        var context = CreateContext();
+        await context.Aggregator.HandleAsync(
+            new BifitEvent(
+                "open-1",
+                BifitEventType.ShiftOpened,
+                Now,
+                "ReceiptSessionService",
+                ShiftInternalId: "1411",
+                ShiftExternalId: "352",
+                ShiftOpenedAt: Now),
+            CancellationToken.None);
+        await context.Aggregator.HandleAsync(
+            new BifitEvent("receipt-1", BifitEventType.ReceiptRegistered, Now.AddMinutes(5), "R", ReceiptId: "51665"),
+            CancellationToken.None);
+
+        // Запоздалая синхронизация уже закрытой чужой сессии.
+        await context.Aggregator.HandleAsync(
+            new BifitEvent(
+                "close-other",
+                BifitEventType.ShiftClosed,
+                Now.AddMinutes(10),
+                "ReceiptSessionService",
+                ShiftInternalId: "999",
+                ShiftExternalId: "1",
+                ShiftOpenedAt: Now.AddHours(-3),
+                ShiftClosedAt: Now.AddHours(-1)),
+            CancellationToken.None);
+
+        var state = await ReadStateAsync(context);
+        Assert.NotNull(state!.CurrentShift);
+        Assert.Equal("1411", state.CurrentShift.InternalId);
+        Assert.Single(state.CurrentShift.RegisteredReceiptIds);
+
+        var messages = await ReadQueuedMessagesAsync(context);
+        Assert.Contains(
+            messages,
+            message => message.Contains("Смена закрыта", StringComparison.Ordinal) &&
+                       message.Contains("внутренняя 999", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            messages,
+            message => message.Contains("Смена закрыта", StringComparison.Ordinal) &&
+                       message.Contains("внутренняя 1411", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ShiftOpenLineAdoptsUnobservedShiftInsteadOfInterrupting()
+    {
+        var context = CreateContext();
+        await context.Aggregator.HandleAsync(
+            new BifitEvent("receipt-1", BifitEventType.ReceiptRegistered, Now, "R", ReceiptId: "51665"),
+            CancellationToken.None);
+
+        // Строка синхронизации той же смены: открытие было раньше первой наблюдённой операции.
+        await context.Aggregator.HandleAsync(
+            new BifitEvent(
+                "open-1",
+                BifitEventType.ShiftOpened,
+                Now.AddMinutes(15),
+                "ReceiptSessionService",
+                ShiftInternalId: "1411",
+                ShiftExternalId: "352",
+                ShiftOpenedAt: Now.AddHours(-5)),
+            CancellationToken.None);
+
+        var state = await ReadStateAsync(context);
+        Assert.NotNull(state!.CurrentShift);
+        Assert.Equal("1411", state.CurrentShift.InternalId);
+        Assert.Single(state.CurrentShift.RegisteredReceiptIds);
+        Assert.True(state.CurrentShift.IsInferred);
+        Assert.Empty(await ReadQueuedMessagesAsync(context));
+    }
+
+    private async Task<ReportState?> ReadStateAsync(TestContext context) =>
+        await context.JsonFile.ReadAsync<ReportState>(context.Paths.ReportStatePath, CancellationToken.None);
+
+    private async Task<IReadOnlyList<string>> ReadQueuedMessagesAsync(TestContext context)
+    {
+        var messages = new List<OutboundMessage>();
+        foreach (var path in Directory.GetFiles(context.Paths.PendingQueueDirectory, "*.json"))
+        {
+            var message = await context.JsonFile.ReadAsync<OutboundMessage>(path, CancellationToken.None);
+            if (message is not null) messages.Add(message);
+        }
+
+        return messages
+            .OrderBy(message => message.CreatedAt)
+            .Select(message => message.Text)
+            .ToList();
     }
 
     private TestContext CreateContext()

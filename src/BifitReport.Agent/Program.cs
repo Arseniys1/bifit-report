@@ -61,4 +61,10 @@ builder.Services.AddHostedService<OutboundDeliveryWorker>();
 builder.Services.AddHostedService<PeriodicReportWorker>();
 builder.Services.AddHostedService<LogArchiveWorker>();
 
+// Ошибка одного фонового обработчика не должна останавливать всю службу: иначе
+// единственная проблема с диском или каталогом состояния оставляет кассу без
+// наблюдения до ручного запуска (см. инцидент 15.11.2026, событие 1000 .NET Runtime).
+builder.Services.Configure<HostOptions>(options =>
+    options.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore);
+
 await builder.Build().RunAsync();

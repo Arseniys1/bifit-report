@@ -14,18 +14,23 @@ public sealed class OutboundDeliveryWorker(
     AgentHealthStore healthStore,
     ILogger<OutboundDeliveryWorker> logger) : BackgroundService
 {
+    private static readonly TimeSpan CleanupInterval = TimeSpan.FromHours(6);
+
     private readonly DeliveryOptions _deliveryOptions = deliveryOptions.Value;
     private readonly VkOptions _vkOptions = vkOptions.Value;
+    private DateTimeOffset _lastCleanupAt = DateTimeOffset.MinValue;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        queue.CleanupSentMarkers();
+        CleanupMarkers();
         logger.LogInformation("Доставка отчётов запущена в режиме {DeliveryMode}.", _deliveryOptions.Mode);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
+                if (DateTimeOffset.Now - _lastCleanupAt >= CleanupInterval) CleanupMarkers();
+
                 var message = await queue.GetNextReadyAsync(DateTimeOffset.Now, stoppingToken);
                 if (message is null)
                 {
@@ -42,7 +47,7 @@ public sealed class OutboundDeliveryWorker(
                     }
 
                     await queue.CompleteAsync(message, "File", stoppingToken);
-                    await healthStore.RecordDeliveryAsync("File", true, null, stoppingToken);
+                    await RecordDeliveryAsync("File", true, null, stoppingToken);
                     continue;
                 }
 
@@ -55,10 +60,16 @@ public sealed class OutboundDeliveryWorker(
             catch (Exception exception)
             {
                 logger.LogError(exception, "Ошибка обработчика очереди; сообщение останется на диске для повтора.");
-                await healthStore.RecordWorkerErrorAsync(nameof(OutboundDeliveryWorker), stoppingToken);
+                await RecordWorkerErrorAsync(stoppingToken);
                 await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
             }
         }
+    }
+
+    private void CleanupMarkers()
+    {
+        _lastCleanupAt = DateTimeOffset.Now;
+        queue.CleanupSentMarkers();
     }
 
     private async Task DeliverToVkAsync(OutboundMessage message, CancellationToken cancellationToken)
@@ -85,7 +96,7 @@ public sealed class OutboundDeliveryWorker(
         }
 
         await queue.CompleteAsync(message, "VK", cancellationToken);
-        await healthStore.RecordDeliveryAsync("VK", true, null, cancellationToken);
+        await RecordDeliveryAsync("VK", true, null, cancellationToken);
         logger.LogInformation("Отчёт {MessageId} доставлен в VK всем получателям.", message.Id);
     }
 
@@ -97,17 +108,51 @@ public sealed class OutboundDeliveryWorker(
     {
         message.Attempts++;
         message.LastErrorCode = errorCode;
+
+        if (!retryable && message.Attempts >= _vkOptions.DeadLetterAttempts)
+        {
+            await queue.FailAsync(message, errorCode, cancellationToken);
+            await RecordDeliveryAsync("VK", false, errorCode, cancellationToken);
+            return;
+        }
+
         var maximumMinutes = _vkOptions.MaximumRetryDelayMinutes;
         var delayMinutes = retryable
             ? Math.Min(maximumMinutes, Math.Pow(2, Math.Min(message.Attempts, 10)) / 4d)
             : maximumMinutes;
         message.NextAttemptAt = DateTimeOffset.Now.AddMinutes(Math.Max(1, delayMinutes));
         await queue.UpdateAsync(message, cancellationToken);
-        await healthStore.RecordDeliveryAsync("VK", false, errorCode, cancellationToken);
+        await RecordDeliveryAsync("VK", false, errorCode, cancellationToken);
         logger.LogWarning(
             "Отчёт {MessageId} не доставлен ({ErrorCode}); следующая попытка {NextAttemptAt}.",
             message.Id,
             errorCode,
             message.NextAttemptAt);
+    }
+
+    private async Task RecordDeliveryAsync(string mode, bool success, string? errorCode, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await healthStore.RecordDeliveryAsync(mode, success, errorCode, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            // Запись статуса не должна останавливать доставку.
+            logger.LogWarning(exception, "Не удалось обновить статус доставки.");
+        }
+    }
+
+    private async Task RecordWorkerErrorAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await healthStore.RecordWorkerErrorAsync(nameof(OutboundDeliveryWorker), cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            // Ошибка в обработчике ошибки не должна валить весь воркер и службу.
+            logger.LogWarning(exception, "Не удалось зафиксировать ошибку воркера доставки.");
+        }
     }
 }

@@ -17,6 +17,13 @@ public sealed class VkOptions
     public int MaximumRetryDelayMinutes { get; set; } = 60;
 
     /// <summary>
+    /// Сколько попыток делается для ошибки, которую VK считает неустранимой
+    /// (нет доступа к диалогу, получатель заблокировал сообщения). После этого
+    /// отчёт переносится в <c>queue\failed</c>, а не повторяется бесконечно.
+    /// </summary>
+    public int DeadLetterAttempts { get; set; } = 3;
+
+    /// <summary>
     /// Базовый адрес с завершающим слешем: без него относительный путь метода
     /// разрешается от корня хоста и запрос уходит не на <c>/method/messages.send</c>.
     /// </summary>

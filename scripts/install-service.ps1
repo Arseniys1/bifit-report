@@ -143,6 +143,13 @@ if (-not $existingService) {
         -StartupType Automatic | Out-Null
 }
 
+# Слой восстановления: если процесс всё-таки упадёт, SCM поднимет службу сам.
+# Без этого одна ошибка оставляла кассу без наблюдения до ручного запуска.
+& sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/30000/restart/30000 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "Failed to configure automatic service recovery for $ServiceName."
+}
+
 Start-Service -Name $ServiceName
 Write-Host "Service $ServiceName is installed and running."
 if ($PreserveConfiguration) {
