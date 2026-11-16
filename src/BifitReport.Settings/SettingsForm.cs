@@ -167,7 +167,7 @@ internal sealed class SettingsForm : Form
         {
             Text = "Фрагмент стека очищается от токенов, телефонов, карт и e-mail."
                    + Environment.NewLine
-                   + "Итоговое сообщение остаётся в пределах ~1,5 КБ при лимите VK 9000 символов.",
+                   + "Итоговое сообщение с большим запасом укладывается в лимит сообщения VK.",
             Location = new Point(10, 380),
             Size = new Size(780, 50),
             ForeColor = Color.DimGray
@@ -272,7 +272,7 @@ internal sealed class SettingsForm : Form
 
     private void SaveClick(object? sender, EventArgs e)
     {
-        if (!ApplyForm() || !EnsureWritable()) return;
+        if (!EnsureWritable() || !ApplyForm()) return;
 
         try
         {
@@ -287,7 +287,7 @@ internal sealed class SettingsForm : Form
 
     private void SaveAndRestartClick(object? sender, EventArgs e)
     {
-        if (!ApplyForm() || !EnsureWritable()) return;
+        if (!EnsureWritable() || !ApplyForm()) return;
 
         try
         {

@@ -17,7 +17,8 @@ public sealed partial class BifitLogParser(
     ];
 
     public BifitEvent? Parse(LogRecord record)
-    {        var match = LogPrefixRegex().Match(record.Text);
+    {
+        var match = LogPrefixRegex().Match(record.Text);
         if (!match.Success) return null;
         if (!DateTimeOffset.TryParseExact(
                 match.Groups["timestamp"].Value,

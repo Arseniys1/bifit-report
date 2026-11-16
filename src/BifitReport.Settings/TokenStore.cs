@@ -122,7 +122,23 @@ internal static class TokenStore
 
         using var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Не удалось запустить icacls.exe.");
-        process.WaitForExit(15_000);
+        if (!process.WaitForExit(15_000))
+        {
+            try
+            {
+                process.Kill();
+            }
+            catch
+            {
+                // Основная ошибка — превышение времени ожидания; не заменяем её
+                // вторичной ошибкой завершения зависшего процесса.
+            }
+
+            throw new InvalidOperationException(
+                "Токен сохранён, но icacls.exe не завершился за 15 секунд. " +
+                "Проверьте права каталога секретов вручную.");
+        }
+
         if (process.ExitCode != 0)
         {
             throw new InvalidOperationException(
