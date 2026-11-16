@@ -133,6 +133,17 @@ internal sealed class ConfigFile
             .ToArray();
     }
 
+    public IReadOnlyList<string> GetArchivePatterns()
+    {
+        if (Section("Archive")["Patterns"] is not JArray patterns) return [];
+
+        return patterns
+            .Values<string>()
+            .Where(pattern => !string.IsNullOrWhiteSpace(pattern))
+            .Select(pattern => pattern!.Trim())
+            .ToArray();
+    }
+
     public void SetString(string section, string property, string value) =>
         Section(section)[property] = value;
 
@@ -151,6 +162,9 @@ internal sealed class ConfigFile
             ["Name"] = source.Name,
             ["Path"] = source.Path
         }));
+
+    public void SetArchivePatterns(IEnumerable<string> patterns) =>
+        Section("Archive")["Patterns"] = new JArray(patterns.Select(pattern => (object)pattern));
 
     public string ResolveTokenPath()
     {

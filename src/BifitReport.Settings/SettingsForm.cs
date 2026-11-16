@@ -37,6 +37,7 @@ internal sealed class SettingsForm : Form
     private CheckBox _chkArchive = null!;
     private TextBox _txtArchiveDest = null!;
     private TextBox _txtSources = null!;
+    private TextBox _txtPatterns = null!;
     private NumericUpDown _numPoll = null!;
     private NumericUpDown _numAge = null!;
     private TextBox _outputDiag = null!;
@@ -205,8 +206,11 @@ internal sealed class SettingsForm : Form
         AddButton(tab, "Добавить папку…", 10, 255, 160, AddArchiveSourceClick);
         AddButton(tab, "Удалить строку", 180, 255, 150, RemoveArchiveSourceClick);
 
-        _numPoll = AddNumber(tab, "Период проверки, мин:", 10, 305, 1, 1440);
-        _numAge = AddNumber(tab, "Не копировать файлы моложе, мин:", 10, 345, 0, 1440);
+        AddLabel(tab, "Какие файлы архивировать (маски через точку с запятой):", 10, 305, 790);
+        _txtPatterns = AddTextBox(tab, string.Empty, 10, 325);
+
+        _numPoll = AddNumber(tab, "Период проверки, мин:", 10, 370, 1, 1440);
+        _numAge = AddNumber(tab, "Не копировать файлы моложе, мин:", 10, 410, 0, 1440);
 
         var hint = new Label
         {
@@ -215,7 +219,7 @@ internal sealed class SettingsForm : Form
                    + "Имя — понятная уникальная подпись кассы; она станет подпапкой архива. Источник только читается."
                    + Environment.NewLine
                    + "Служба работает от LocalSystem: для сетевого каталога этому аккаунту нужен доступ.",
-            Location = new Point(10, 390),
+            Location = new Point(10, 450),
             Size = new Size(790, 65),
             ForeColor = Color.DimGray
         };
@@ -273,6 +277,7 @@ internal sealed class SettingsForm : Form
         _txtSources.Text = string.Join(
             Environment.NewLine,
             _config.GetSources().Select(source => source.Name + "|" + source.Path));
+        _txtPatterns.Text = string.Join("; ", _config.GetArchivePatterns());
         _numPoll.Value = Clamp(_config.GetInt("Archive", "PollIntervalMinutes", 60), 1, 1440);
         _numAge.Value = Clamp(_config.GetInt("Archive", "MinFileAgeMinutes", 10), 0, 1440);
     }
@@ -502,9 +507,21 @@ internal sealed class SettingsForm : Form
             return false;
         }
 
+        if (!TryParseArchivePatterns(_txtPatterns.Text, out var patterns, out error))
+        {
+            ShowError(error);
+            return false;
+        }
+
         if (_chkArchive.Checked && sources.Length == 0)
         {
             ShowError("Для архива добавьте хотя бы один источник.");
+            return false;
+        }
+
+        if (_chkArchive.Checked && patterns.Length == 0)
+        {
+            ShowError("Для архива укажите хотя бы одну маску файлов.");
             return false;
         }
 
@@ -534,6 +551,7 @@ internal sealed class SettingsForm : Form
         _config.SetBool("Archive", "Enabled", _chkArchive.Checked);
         _config.SetString("Archive", "Destination", _txtArchiveDest.Text.Trim());
         _config.SetSources(sources);
+        _config.SetArchivePatterns(patterns);
         _config.SetInt("Archive", "PollIntervalMinutes", (int)_numPoll.Value);
         _config.SetInt("Archive", "MinFileAgeMinutes", (int)_numAge.Value);
 
@@ -741,6 +759,31 @@ internal sealed class SettingsForm : Form
         {
             return string.Empty;
         }
+    }
+
+    private static bool TryParseArchivePatterns(string text, out string[] patterns, out string error)
+    {
+        var values = text.Split(
+                [';', ',', '\r', '\n', '\t'],
+                StringSplitOptions.RemoveEmptyEntries)
+            .Select(pattern => pattern.Trim())
+            .Where(pattern => pattern.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        foreach (var pattern in values)
+        {
+            if (pattern.Contains('\\') || pattern.Contains('/') || pattern is "." or "..")
+            {
+                patterns = [];
+                error = "Маска должна описывать имя файла без пути: " + pattern;
+                return false;
+            }
+        }
+
+        patterns = values;
+        error = string.Empty;
+        return true;
     }
 
     private void SelectTab(string name)

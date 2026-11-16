@@ -27,6 +27,7 @@ internal static class SelfTest
             lines.Add("Источники: " + string.Join(
                 "; ",
                 config.GetSources().Select(source => source.Name + "|" + source.Path)));
+            lines.Add("Маски архива: " + string.Join(", ", config.GetArchivePatterns()));
             lines.Add("Токен: " + TokenStore.Status(config));
             lines.Add("Служба: " + ServiceLabel());
 
