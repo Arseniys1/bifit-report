@@ -85,7 +85,8 @@ internal sealed class SettingsForm : Form
         var tab = AddTab("Основное");
 
         AddLabel(tab, "Путь к журналу БИФИТ (desktop.log):", 10, 15);
-        _txtLogPath = AddTextBox(tab, string.Empty, 10, 35);
+        _txtLogPath = AddTextBox(tab, string.Empty, 10, 35, 645);
+        AddButton(tab, "Выбрать файл…", 665, 31, 135, BrowseLogClick);
 
         AddLabel(tab, "Каталог состояния (очередь, токен, статус):", 10, 70);
         _txtState = AddTextBox(tab, string.Empty, 10, 90);
@@ -187,9 +188,10 @@ internal sealed class SettingsForm : Form
             780);
 
         AddLabel(tab, "Каталог архива (лучше другой диск или сетевой ресурс):", 10, 50);
-        _txtArchiveDest = AddTextBox(tab, string.Empty, 10, 70);
+        _txtArchiveDest = AddTextBox(tab, string.Empty, 10, 70, 645);
+        AddButton(tab, "Выбрать папку…", 665, 66, 135, BrowseArchiveDestinationClick);
 
-        AddLabel(tab, "Источники: по одному в строке, формат Имя|Путь", 10, 105);
+        AddLabel(tab, "Источники журналов: Имя кассы|Папка logs (по одному в строке)", 10, 105, 790);
         _txtSources = new TextBox
         {
             Multiline = true,
@@ -200,16 +202,21 @@ internal sealed class SettingsForm : Form
         };
         tab.Controls.Add(_txtSources);
 
-        _numPoll = AddNumber(tab, "Период проверки, мин:", 10, 265, 1, 1440);
-        _numAge = AddNumber(tab, "Не копировать файлы моложе, мин:", 10, 305, 0, 1440);
+        AddButton(tab, "Добавить папку…", 10, 255, 160, AddArchiveSourceClick);
+        AddButton(tab, "Удалить строку", 180, 255, 150, RemoveArchiveSourceClick);
+
+        _numPoll = AddNumber(tab, "Период проверки, мин:", 10, 305, 1, 1440);
+        _numAge = AddNumber(tab, "Не копировать файлы моложе, мин:", 10, 345, 0, 1440);
 
         var hint = new Label
         {
-            Text = "Источник только читается, архив ничего не удаляет."
+            Text = "Источник — папка logs конкретной кассы, обычно C:\\ProgramData\\BIFIT\\retail\\logs."
+                   + Environment.NewLine
+                   + "Имя — понятная уникальная подпись кассы; она станет подпапкой архива. Источник только читается."
                    + Environment.NewLine
                    + "Служба работает от LocalSystem: для сетевого каталога этому аккаунту нужен доступ.",
-            Location = new Point(10, 350),
-            Size = new Size(780, 50),
+            Location = new Point(10, 390),
+            Size = new Size(790, 65),
             ForeColor = Color.DimGray
         };
         tab.Controls.Add(hint);
@@ -312,6 +319,92 @@ internal sealed class SettingsForm : Form
         }
 
         Process.Start("explorer.exe", "\"" + directory + "\"");
+    }
+
+    private void BrowseLogClick(object? sender, EventArgs e)
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Выберите журнал БИФИТ desktop.log",
+            Filter = "Журнал БИФИТ (desktop.log)|desktop.log|Файлы журналов (*.log)|*.log|Все файлы (*.*)|*.*",
+            CheckFileExists = true,
+            CheckPathExists = true,
+            Multiselect = false,
+            FileName = IOPath.GetFileName(_txtLogPath.Text.Trim())
+        };
+
+        var directory = TryGetExistingDirectory(_txtLogPath.Text, pathIsFile: true);
+        if (directory.Length > 0) dialog.InitialDirectory = directory;
+        if (dialog.ShowDialog(this) == DialogResult.OK) _txtLogPath.Text = dialog.FileName;
+    }
+
+    private void BrowseArchiveDestinationClick(object? sender, EventArgs e)
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Выберите корневую папку, куда складывать архив журналов.",
+            ShowNewFolderButton = true
+        };
+
+        var directory = TryGetExistingDirectory(_txtArchiveDest.Text, pathIsFile: false);
+        if (directory.Length > 0) dialog.SelectedPath = directory;
+        if (dialog.ShowDialog(this) == DialogResult.OK) _txtArchiveDest.Text = dialog.SelectedPath;
+    }
+
+    private void AddArchiveSourceClick(object? sender, EventArgs e)
+    {
+        using var folderDialog = new FolderBrowserDialog
+        {
+            Description = "Выберите папку logs кассы БИФИТ, из которой копировать ротированные журналы.",
+            ShowNewFolderButton = false
+        };
+
+        var logDirectory = TryGetExistingDirectory(_txtLogPath.Text, pathIsFile: true);
+        if (logDirectory.Length > 0) folderDialog.SelectedPath = logDirectory;
+        if (folderDialog.ShowDialog(this) != DialogResult.OK) return;
+
+        var suggestedName = _txtStore.Text.Trim();
+        if (suggestedName.Length == 0) suggestedName = Environment.MachineName;
+
+        using var nameDialog = new SourceNameDialog(suggestedName, folderDialog.SelectedPath);
+        if (nameDialog.ShowDialog(this) != DialogResult.OK) return;
+
+        var name = nameDialog.SourceName.Trim();
+        if (name.Length == 0)
+        {
+            ShowError("Укажите имя кассы/точки для источника.");
+            return;
+        }
+
+        if (name.IndexOfAny(IOPath.GetInvalidFileNameChars()) >= 0)
+        {
+            ShowError("Имя источника содержит символы, недопустимые для имени папки.");
+            return;
+        }
+
+        var existingNames = _txtSources.Lines
+            .Select(line => line.Split('|')[0].Trim())
+            .Where(value => value.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (existingNames.Contains(name))
+        {
+            ShowError("Источник с именем «" + name + "» уже есть. Укажите другое имя.");
+            return;
+        }
+
+        var entry = name + "|" + folderDialog.SelectedPath;
+        _txtSources.AppendText((_txtSources.TextLength == 0 ? string.Empty : Environment.NewLine) + entry);
+    }
+
+    private void RemoveArchiveSourceClick(object? sender, EventArgs e)
+    {
+        if (_txtSources.Lines.Length == 0) return;
+
+        var selectedLine = _txtSources.GetLineFromCharIndex(_txtSources.SelectionStart);
+        var lines = _txtSources.Lines.ToList();
+        if (selectedLine < 0 || selectedLine >= lines.Count) return;
+        lines.RemoveAt(selectedLine);
+        _txtSources.Lines = lines.ToArray();
     }
 
     private void SaveTokenClick(object? sender, EventArgs e)
@@ -576,6 +669,7 @@ internal sealed class SettingsForm : Form
         out string error)
     {
         var values = new List<ArchiveSourceEntry>();
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var line in text.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries))
         {
             var trimmed = line.Trim();
@@ -598,12 +692,55 @@ internal sealed class SettingsForm : Form
                 return false;
             }
 
+            if (name.IndexOfAny(IOPath.GetInvalidFileNameChars()) >= 0)
+            {
+                sources = [];
+                error = "Имя источника содержит недопустимые символы: " + name;
+                return false;
+            }
+
+            if (!names.Add(name))
+            {
+                sources = [];
+                error = "Имя источника повторяется: " + name;
+                return false;
+            }
+
+            try
+            {
+                IOPath.GetFullPath(Environment.ExpandEnvironmentVariables(path));
+            }
+            catch (Exception exception) when (
+                exception is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                sources = [];
+                error = "Некорректный путь источника: " + path;
+                return false;
+            }
+
             values.Add(new ArchiveSourceEntry { Name = name, Path = path });
         }
 
         sources = values.ToArray();
         error = string.Empty;
         return true;
+    }
+
+    private static string TryGetExistingDirectory(string rawPath, bool pathIsFile)
+    {
+        if (string.IsNullOrWhiteSpace(rawPath)) return string.Empty;
+
+        try
+        {
+            var normalized = IOPath.GetFullPath(Environment.ExpandEnvironmentVariables(rawPath.Trim()));
+            var directory = pathIsFile ? IOPath.GetDirectoryName(normalized) ?? string.Empty : normalized;
+            return Directory.Exists(directory) ? directory : string.Empty;
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return string.Empty;
+        }
     }
 
     private void SelectTab(string name)
@@ -769,5 +906,67 @@ internal sealed class SettingsForm : Form
         }
 
         public string Token => _textBox.Text;
+    }
+
+    private sealed class SourceNameDialog : Form
+    {
+        private readonly TextBox _textBox;
+
+        public SourceNameDialog(string suggestedName, string sourcePath)
+        {
+            Text = "Источник архива";
+            Size = new Size(600, 225);
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            Font = new Font("Segoe UI", 9F);
+
+            var label = new Label
+            {
+                Text = "Имя кассы/точки (станет подпапкой архива):",
+                Location = new Point(12, 12),
+                Size = new Size(555, 20)
+            };
+            _textBox = new TextBox
+            {
+                Text = suggestedName,
+                Location = new Point(12, 36),
+                Size = new Size(555, 24)
+            };
+            var pathLabel = new Label
+            {
+                Text = "Папка logs: " + sourcePath,
+                Location = new Point(12, 70),
+                Size = new Size(555, 40),
+                AutoEllipsis = true,
+                ForeColor = Color.DimGray
+            };
+            var ok = new Button
+            {
+                Text = "Добавить",
+                DialogResult = DialogResult.OK,
+                Location = new Point(375, 125),
+                Size = new Size(92, 30)
+            };
+            var cancel = new Button
+            {
+                Text = "Отмена",
+                DialogResult = DialogResult.Cancel,
+                Location = new Point(475, 125),
+                Size = new Size(92, 30)
+            };
+
+            Controls.AddRange([label, _textBox, pathLabel, ok, cancel]);
+            AcceptButton = ok;
+            CancelButton = cancel;
+            Shown += (_, _) =>
+            {
+                _textBox.SelectAll();
+                _textBox.Focus();
+            };
+        }
+
+        public string SourceName => _textBox.Text;
     }
 }
