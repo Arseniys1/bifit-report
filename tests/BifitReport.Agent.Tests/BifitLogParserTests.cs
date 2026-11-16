@@ -36,6 +36,14 @@ public sealed class BifitLogParserTests
     }
 
     [Fact]
+    public void ParsesApplicationStartMarker()
+    {
+        var started = Parse("2026-11-16 21:09:24,571 INFO com.bifit.cashdesk.desktop.retail.Initializer [JavaFX-Launcher] System Information:");
+
+        Assert.Equal(BifitEventType.ApplicationStarted, started.Type);
+    }
+
+    [Fact]
     public void TreatsNullExternalShiftNumberAsMissing()
     {
         var shift = Parse("2026-11-15 02:21:19,143 INFO com.bifit.cashdesk.desktop.service.ReceiptSessionService [thread] Смена синхронизирована ReceiptSession(internalId=4, id=null, userOpenId=1, internalSession=4, externalSession=null, open=2026-11-12T00:50:52+05:00, closed=2026-11-15T02:21:19+05:00, synced=false)");

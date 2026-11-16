@@ -2,6 +2,7 @@ namespace BifitReport.Agent.Models;
 
 public enum BifitEventType
 {
+    ApplicationStarted,
     ShiftOpened,
     ShiftClosed,
     ReceiptRegistered,

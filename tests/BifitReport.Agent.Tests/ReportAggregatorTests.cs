@@ -36,6 +36,27 @@ public sealed class ReportAggregatorTests : IDisposable
     }
 
     [Fact]
+    public async Task ApplicationRestartResetsCriticalErrorCooldown()
+    {
+        var context = CreateContext();
+
+        await context.Aggregator.HandleAsync(CriticalError("error-1", Now), CancellationToken.None);
+        await context.Aggregator.HandleAsync(CriticalError("error-2", Now.AddMinutes(5)), CancellationToken.None);
+        Assert.Single(await ReadQueuedMessagesAsync(context));
+
+        await context.Aggregator.HandleAsync(
+            new BifitEvent(
+                "application-start-1",
+                BifitEventType.ApplicationStarted,
+                Now.AddMinutes(6),
+                "com.bifit.cashdesk.desktop.retail.Initializer"),
+            CancellationToken.None);
+        await context.Aggregator.HandleAsync(CriticalError("error-3", Now.AddMinutes(7)), CancellationToken.None);
+
+        Assert.Equal(2, (await ReadQueuedMessagesAsync(context)).Count);
+    }
+
+    [Fact]
     public async Task QueueDeduplicatesPendingAndDeliveredMessages()
     {
         var context = CreateContext();
@@ -219,6 +240,16 @@ public sealed class ReportAggregatorTests : IDisposable
             .Select(message => message.Text)
             .ToList();
     }
+
+    private static BifitEvent CriticalError(string id, DateTimeOffset timestamp) =>
+        new(
+            id,
+            BifitEventType.ApplicationError,
+            timestamp,
+            "RRElectro",
+            ErrorCategory: "ККТ/фискализация",
+            IsCritical: true,
+            SafeMessage: "Ошибка РР Электро -1");
 
     private TestContext CreateContext()
     {

@@ -39,6 +39,9 @@ public sealed class ReportAggregator(
 
             switch (bifitEvent.Type)
             {
+                case BifitEventType.ApplicationStarted:
+                    HandleApplicationStarted(bifitEvent);
+                    break;
                 case BifitEventType.ShiftOpened:
                     await HandleShiftOpenedAsync(bifitEvent, cancellationToken);
                     break;
@@ -235,6 +238,17 @@ public sealed class ReportAggregator(
     private async Task HandleApplicationErrorAsync(BifitEvent bifitEvent, CancellationToken cancellationToken)
     {
         await TrackErrorAsync(bifitEvent, _state!.CurrentShift, cancellationToken);
+    }
+
+    private void HandleApplicationStarted(BifitEvent bifitEvent)
+    {
+        // Cooldown protects from a stream of identical errors while one process is
+        // running. A new BIFIT process is a new incident: its first errors must be
+        // reported even when the previous process stopped less than N minutes ago.
+        _state!.LastCriticalNotificationByCategory.Clear();
+        logger.LogInformation(
+            "Обнаружен новый запуск БИФИТ в {StartedAt}; интервалы повторных алертов сброшены.",
+            bifitEvent.Timestamp);
     }
 
     private async Task TrackErrorAsync(BifitEvent bifitEvent, ShiftReportState? shift, CancellationToken cancellationToken)

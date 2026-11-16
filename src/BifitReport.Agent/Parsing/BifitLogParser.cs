@@ -35,6 +35,16 @@ public sealed partial class BifitLogParser(
         var message = match.Groups["message"].Value;
         var eventIdPrefix = CreateEventId(record, timestamp);
 
+        if (logger.EndsWith(".Initializer", StringComparison.Ordinal) &&
+            message.StartsWith("System Information:", StringComparison.Ordinal))
+        {
+            return new BifitEvent(
+                eventIdPrefix + ":application-start",
+                BifitEventType.ApplicationStarted,
+                timestamp,
+                logger);
+        }
+
         var shiftMatch = ShiftRegex().Match(message);
         if (shiftMatch.Success)
         {
