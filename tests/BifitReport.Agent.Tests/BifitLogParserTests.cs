@@ -1,5 +1,6 @@
 using BifitReport.Agent.Models;
 using BifitReport.Agent.Parsing;
+using BifitReport.Core.Security;
 
 namespace BifitReport.Agent.Tests;
 

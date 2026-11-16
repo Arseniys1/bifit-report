@@ -8,6 +8,7 @@ using BifitReport.Agent.Reporting;
 using BifitReport.Agent.State;
 using BifitReport.Agent.Tailing;
 using BifitReport.Agent.Workers;
+using BifitReport.Core.Security;
 using Microsoft.Extensions.Options;
 
 var builder = Host.CreateApplicationBuilder(args);

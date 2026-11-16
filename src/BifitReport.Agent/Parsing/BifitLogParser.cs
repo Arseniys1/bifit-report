@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using BifitReport.Core.Security;
 using BifitReport.Agent.Models;
 
 namespace BifitReport.Agent.Parsing;

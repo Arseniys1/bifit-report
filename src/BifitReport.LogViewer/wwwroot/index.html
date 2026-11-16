@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BIFIT Log Viewer</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">BIFIT REPORT</div>
+      <h1>Журналы кассы</h1>
+    </div>
+    <div class="identity">
+      <span id="connection" class="status status-idle">ожидание</span>
+      <span id="user"></span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <section>
+        <label for="source">Источник</label>
+        <select id="source" aria-label="Источник журналов"></select>
+      </section>
+      <section class="file-filter">
+        <label for="file-filter">Файлы</label>
+        <input id="file-filter" type="search" maxlength="200" placeholder="Фильтр по имени">
+      </section>
+      <div id="files" class="files" role="listbox" aria-label="Файлы журналов"></div>
+      <div id="catalog-note" class="catalog-note"></div>
+    </aside>
+
+    <section class="workspace">
+      <div class="toolbar">
+        <div class="current-file">
+          <span class="muted">Открыт файл</span>
+          <strong id="current-file">Выберите журнал</strong>
+        </div>
+        <div class="controls">
+          <input id="query" type="search" maxlength="200" placeholder="Поиск в последних строках" aria-label="Поиск по журналу">
+          <select id="level" aria-label="Уровень журнала">
+            <option value="ALL">Все уровни</option>
+            <option value="ERROR">ERROR</option>
+            <option value="WARN">WARN</option>
+            <option value="INFO">INFO</option>
+            <option value="DEBUG">DEBUG</option>
+            <option value="TRACE">TRACE</option>
+          </select>
+          <select id="tail" aria-label="Количество строк">
+            <option value="200">200 строк</option>
+            <option value="500" selected>500 строк</option>
+            <option value="1000">1000 строк</option>
+            <option value="2000">2000 строк</option>
+          </select>
+          <label id="raw-control" class="check hidden"><input id="raw" type="checkbox"> raw</label>
+          <label class="check"><input id="follow" type="checkbox" checked> live</label>
+          <button id="refresh" type="button">Обновить</button>
+          <button id="copy" type="button" class="secondary">Копировать</button>
+        </div>
+      </div>
+
+      <div id="notice" class="notice hidden" role="status"></div>
+      <div id="log" class="log" tabindex="0" aria-label="Содержимое журнала"></div>
+      <footer class="log-footer">
+        <span id="line-count">0 строк</span>
+        <span id="mode">данные маскируются</span>
+      </footer>
+    </section>
+  </main>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
