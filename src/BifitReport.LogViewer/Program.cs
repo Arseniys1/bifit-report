@@ -5,9 +5,10 @@ using BifitReport.LogViewer.Endpoints;
 using BifitReport.LogViewer.Infrastructure;
 using BifitReport.LogViewer.Logs;
 using BifitReport.LogViewer.Security;
-using Microsoft.AspNetCore.Authentication.Negotiate;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Options;
 using Serilog;
 
@@ -19,6 +20,12 @@ builder.Configuration
     .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false)
     .AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: false)
     .AddEnvironmentVariables(prefix: "BIFIT_LOG_VIEWER_");
+
+if (IdentityBootstrapCommand.IsRequested(args))
+{
+    Environment.ExitCode = await IdentityBootstrapCommand.RunAsync(builder.Configuration, args, Console.In, Console.Out);
+    return;
+}
 
 var server = builder.Configuration.GetSection(ServerOptions.SectionName).Get<ServerOptions>() ?? new ServerOptions();
 builder.WebHost.UseUrls(server.ListenUrl);
@@ -38,27 +45,35 @@ builder.Host.UseSerilog((context, services, configuration) => configuration
 builder.Services.AddOptions<LogViewerOptions>()
     .Bind(builder.Configuration.GetSection(LogViewerOptions.SectionName))
     .ValidateOnStart();
-builder.Services.AddOptions<AccessOptions>()
-    .Bind(builder.Configuration.GetSection(AccessOptions.SectionName))
+builder.Services.AddOptions<ViewerAuthenticationOptions>()
+    .Bind(builder.Configuration.GetSection(ViewerAuthenticationOptions.SectionName))
     .ValidateOnStart();
 builder.Services.AddOptions<ServerOptions>()
     .Bind(builder.Configuration.GetSection(ServerOptions.SectionName))
     .ValidateOnStart();
 builder.Services.AddSingleton<IValidateOptions<LogViewerOptions>, LogViewerOptionsValidator>();
-builder.Services.AddSingleton<IValidateOptions<AccessOptions>, LogViewerOptionsValidator>();
+builder.Services.AddSingleton<IValidateOptions<ViewerAuthenticationOptions>, LogViewerOptionsValidator>();
 builder.Services.AddSingleton<IValidateOptions<ServerOptions>, LogViewerOptionsValidator>();
 
-builder.Services
-    .AddAuthentication(NegotiateDefaults.AuthenticationScheme)
-    .AddNegotiate();
+var authenticationOptions = builder.Configuration
+    .GetSection(ViewerAuthenticationOptions.SectionName)
+    .Get<ViewerAuthenticationOptions>() ?? new ViewerAuthenticationOptions();
+builder.Services.AddLogViewerIdentity(authenticationOptions);
 builder.Services.AddAuthorization(options =>
 {
     options.FallbackPolicy = new AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
-        .AddRequirements(new AllowedPrincipalRequirement())
         .Build();
 });
-builder.Services.AddSingleton<IAuthorizationHandler, AllowedPrincipalHandler>();
+builder.Services.AddRazorPages();
+builder.Services.AddAntiforgery(options =>
+{
+    options.HeaderName = "X-CSRF-TOKEN";
+    options.Cookie.Name = "BifitReport.LogViewer.Antiforgery";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SameSite = SameSiteMode.Strict;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+});
 
 builder.Services.AddRateLimiter(options =>
 {
@@ -74,6 +89,16 @@ builder.Services.AddRateLimiter(options =>
             AutoReplenishment = true
         });
     });
+    options.AddPolicy("login", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(5),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
 });
 
 builder.Services.AddProblemDetails();
@@ -83,6 +108,7 @@ builder.Services.AddHealthChecks()
 builder.Services.AddSingleton<SensitiveDataRedactor>();
 builder.Services.AddSingleton<LogCatalog>();
 builder.Services.AddSingleton<LogReader>();
+builder.Services.AddHostedService<IdentityDatabaseInitializer>();
 
 var app = builder.Build();
 
@@ -107,6 +133,9 @@ app.Use(async (context, next) =>
     await next();
 });
 
+app.UseWhen(
+    context => context.Request.Path.Equals("/app.css", StringComparison.OrdinalIgnoreCase),
+    branch => branch.UseStaticFiles());
 app.UseAuthentication();
 app.UseRateLimiter();
 app.UseAuthorization();
@@ -114,6 +143,16 @@ app.UseStaticFiles();
 
 app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false }).AllowAnonymous();
 app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = registration => registration.Tags.Contains("ready") }).AllowAnonymous();
+app.MapRazorPages();
+app.MapPost("/auth/logout", async (
+    HttpContext context,
+    IAntiforgery antiforgery,
+    SignInManager<LogViewerUser> signInManager) =>
+{
+    await antiforgery.ValidateRequestAsync(context);
+    await signInManager.SignOutAsync();
+    return Results.NoContent();
+});
 app.MapLogEndpoints();
 app.MapGet("/", (IWebHostEnvironment environment) =>
     Results.File(Path.Combine(environment.WebRootPath, "index.html"), "text/html; charset=utf-8"));

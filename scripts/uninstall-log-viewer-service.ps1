@@ -6,7 +6,8 @@ param(
     [string]$InstallPath = "C:\Program Files\BifitReport.LogViewer",
     [string]$ApplicationDataPath = "C:\ProgramData\BifitReport.LogViewer",
     [switch]$KeepFiles,
-    [switch]$RemoveApplicationLogs,
+    [Alias("RemoveApplicationLogs")]
+    [switch]$RemoveApplicationData,
     [switch]$RemoveFirewallRule
 )
 
@@ -36,13 +37,13 @@ if ($RemoveFirewallRule) {
 if (-not $KeepFiles -and (Test-Path -LiteralPath $InstallPath)) {
     Remove-Item -LiteralPath $InstallPath -Recurse -Force
 }
-if ($RemoveApplicationLogs) {
+if ($RemoveApplicationData) {
     if (Test-Path -LiteralPath $ApplicationDataPath) {
         Remove-Item -LiteralPath $ApplicationDataPath -Recurse -Force
     }
 }
 
 Write-Host "Service $ServiceName was removed."
-if (-not $RemoveApplicationLogs) {
-    Write-Host "Application audit logs were kept in $ApplicationDataPath."
+if (-not $RemoveApplicationData) {
+    Write-Host "Identity database, encryption keys, and audit logs were kept in $ApplicationDataPath."
 }

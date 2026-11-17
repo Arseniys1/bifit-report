@@ -23,9 +23,13 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
-    public void RejectsEmptyAccessList()
+    public void RejectsRelativeIdentityStoragePaths()
     {
-        var result = _validator.Validate(null, new AccessOptions { AllowedPrincipals = [] });
+        var result = _validator.Validate(null, new ViewerAuthenticationOptions
+        {
+            DatabasePath = "identity.db",
+            DataProtectionKeysPath = "keys"
+        });
 
         Assert.True(result.Failed);
     }

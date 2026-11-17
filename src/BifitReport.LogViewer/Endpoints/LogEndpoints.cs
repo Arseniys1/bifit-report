@@ -1,5 +1,6 @@
 using BifitReport.LogViewer.Configuration;
 using BifitReport.LogViewer.Logs;
+using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.Extensions.Options;
 
 namespace BifitReport.LogViewer.Endpoints;
@@ -10,12 +11,13 @@ public static class LogEndpoints
     {
         var api = endpoints.MapGroup("/api/v1");
 
-        api.MapGet("/settings", (IOptions<LogViewerOptions> options, HttpContext context) => Results.Ok(new
+        api.MapGet("/settings", (IOptions<LogViewerOptions> options, IAntiforgery antiforgery, HttpContext context) => Results.Ok(new
         {
             allowRawLogs = options.Value.AllowRawLogs,
             defaultTailLines = options.Value.DefaultTailLines,
             maximumTailLines = options.Value.MaximumTailLines,
-            user = context.User.Identity?.Name ?? string.Empty
+            user = context.User.Identity?.Name ?? string.Empty,
+            csrfToken = antiforgery.GetAndStoreTokens(context).RequestToken
         }));
 
         api.MapGet("/sources", (LogCatalog catalog) => Results.Ok(catalog.GetSources()));

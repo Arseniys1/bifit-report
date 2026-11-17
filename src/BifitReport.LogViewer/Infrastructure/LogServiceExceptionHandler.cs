@@ -1,4 +1,5 @@
 using BifitReport.LogViewer.Logs;
+using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 
@@ -13,7 +14,7 @@ public sealed class LogServiceExceptionHandler(
         var status = exception switch
         {
             LogResourceNotFoundException or FileNotFoundException => StatusCodes.Status404NotFound,
-            LogRequestException => StatusCodes.Status400BadRequest,
+            LogRequestException or AntiforgeryValidationException => StatusCodes.Status400BadRequest,
             LogLimitExceededException => StatusCodes.Status413PayloadTooLarge,
             IOException => StatusCodes.Status503ServiceUnavailable,
             UnauthorizedAccessException => StatusCodes.Status404NotFound,

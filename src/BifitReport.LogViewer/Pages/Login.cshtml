@@ -1,0 +1,41 @@
+@page "/login"
+@model LoginModel
+@{
+    Layout = null;
+}
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход — BIFIT Log Viewer</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <div class="eyebrow">BIFIT REPORT</div>
+    <h1>Вход в журналы</h1>
+    <p class="login-description">Введите учётные данные Log Viewer.</p>
+
+    <form method="post" class="login-form">
+      <input asp-for="ReturnUrl" type="hidden">
+      <div asp-validation-summary="ModelOnly" class="validation" role="alert"></div>
+
+      <div>
+        <label asp-for="Input.UserName">Логин</label>
+        <input asp-for="Input.UserName" autocomplete="username" autofocus>
+        <span asp-validation-for="Input.UserName" class="validation"></span>
+      </div>
+      <div>
+        <label asp-for="Input.Password">Пароль</label>
+        <input asp-for="Input.Password" autocomplete="current-password">
+        <span asp-validation-for="Input.Password" class="validation"></span>
+      </div>
+      <label class="check login-remember">
+        <input asp-for="Input.RememberMe"> Оставаться в системе
+      </label>
+      <button type="submit" class="login-submit">Войти</button>
+    </form>
+  </main>
+</body>
+</html>

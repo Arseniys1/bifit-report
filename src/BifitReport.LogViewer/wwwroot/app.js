@@ -14,18 +14,23 @@ const state = {
   filePageCount: 1,
   fileListGeneration: 0,
   contentGeneration: 0,
-  contentAbortController: null
+  contentAbortController: null,
+  csrfToken: null
 };
 
 const elements = Object.fromEntries([
   "source", "file-filter", "files", "files-prev", "files-next", "files-page", "catalog-note", "current-file", "query", "level", "tail",
   "raw-control", "raw", "follow", "refresh", "copy", "notice", "log", "line-count", "mode",
-  "connection", "user"
+  "connection", "user", "logout"
 ].map(id => [id, document.getElementById(id)]));
 
 async function api(url, signal) {
   const response = await fetch(url, { credentials: "same-origin", headers: { "Accept": "application/json" }, signal });
   if (!response.ok) {
+    if (response.status === 401) {
+      window.location.assign(`/login?returnUrl=${encodeURIComponent(window.location.pathname)}`);
+      throw new Error("Сессия завершена.");
+    }
     let message = `HTTP ${response.status}`;
     try { message = (await response.json()).detail || message; } catch { /* response is not JSON */ }
     throw new Error(message);
@@ -77,6 +82,7 @@ function appendLines(lines, replace) {
 async function loadSettings() {
   const settings = await api("/api/v1/settings");
   elements.user.textContent = settings.user;
+  state.csrfToken = settings.csrfToken;
   elements["raw-control"].classList.toggle("hidden", !settings.allowRawLogs);
   elements.tail.value = String(settings.defaultTailLines);
   state.maxLines = settings.maximumTailLines;
@@ -262,6 +268,15 @@ elements.copy.addEventListener("click", async () => {
   await navigator.clipboard.writeText(text);
   elements.copy.textContent = "Скопировано";
   window.setTimeout(() => { elements.copy.textContent = "Копировать"; }, 1200);
+});
+elements.logout.addEventListener("click", async () => {
+  const response = await fetch("/auth/logout", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "X-CSRF-TOKEN": state.csrfToken }
+  });
+  if (!response.ok) throw new Error(`Не удалось выйти: HTTP ${response.status}`);
+  window.location.assign("/login");
 });
 
 (async () => {

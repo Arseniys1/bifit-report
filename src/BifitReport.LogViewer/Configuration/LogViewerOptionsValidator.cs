@@ -5,7 +5,7 @@ namespace BifitReport.LogViewer.Configuration;
 
 public sealed partial class LogViewerOptionsValidator :
     IValidateOptions<LogViewerOptions>,
-    IValidateOptions<AccessOptions>,
+    IValidateOptions<ViewerAuthenticationOptions>,
     IValidateOptions<ServerOptions>
 {
     public ValidateOptionsResult Validate(string? name, LogViewerOptions options)
@@ -45,10 +45,25 @@ public sealed partial class LogViewerOptionsValidator :
         return errors.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(errors);
     }
 
-    public ValidateOptionsResult Validate(string? name, AccessOptions options) =>
-        options.AllowedPrincipals.Count > 0 && options.AllowedPrincipals.All(value => !string.IsNullOrWhiteSpace(value))
-            ? ValidateOptionsResult.Success
-            : ValidateOptionsResult.Fail("Access:AllowedPrincipals must contain at least one Windows user, group, or SID.");
+    public ValidateOptionsResult Validate(string? name, ViewerAuthenticationOptions options)
+    {
+        var errors = new List<string>();
+        if (string.IsNullOrWhiteSpace(options.DatabasePath) ||
+            !Path.IsPathFullyQualified(Environment.ExpandEnvironmentVariables(options.DatabasePath)))
+        {
+            errors.Add("Authentication:DatabasePath must be an absolute path.");
+        }
+        if (string.IsNullOrWhiteSpace(options.DataProtectionKeysPath) ||
+            !Path.IsPathFullyQualified(Environment.ExpandEnvironmentVariables(options.DataProtectionKeysPath)))
+        {
+            errors.Add("Authentication:DataProtectionKeysPath must be an absolute path.");
+        }
+        if (options.SessionHours is < 1 or > 168)
+        {
+            errors.Add("Authentication:SessionHours must be between 1 and 168.");
+        }
+        return errors.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(errors);
+    }
 
     public ValidateOptionsResult Validate(string? name, ServerOptions options)
     {

@@ -8,11 +8,13 @@ param(
     [string]$LogRoot = "C:\ProgramData\BIFIT\retail\logs",
     [string]$ListenUrl = "https://0.0.0.0:7443",
     [string]$CertificateThumbprint = "",
-    [string[]]$AllowedPrincipals = @("$env:USERDOMAIN\$env:USERNAME"),
+    [string]$AdminUser = "admin",
+    [Security.SecureString]$AdminPassword,
     [string]$ServiceName = "BifitReport.LogViewer",
     [switch]$AllowRawLogs,
     [switch]$OpenFirewall,
-    [switch]$PreserveConfiguration
+    [switch]$PreserveConfiguration,
+    [switch]$ResetAdminPassword
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,8 +43,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $PublishPath "BifitReport.LogViewer.
 if (-not $PreserveConfiguration -and -not (Test-Path -LiteralPath $LogRoot -PathType Container)) {
     throw "Log root does not exist: $LogRoot"
 }
-if ($AllowedPrincipals.Count -eq 0 -or $AllowedPrincipals.Where({ [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
-    throw "At least one non-empty AllowedPrincipals value is required."
+if ([string]::IsNullOrWhiteSpace($AdminUser) -or $AdminUser.Length -gt 100 -or $AdminUser.Contains("`r") -or $AdminUser.Contains("`n")) {
+    throw "AdminUser must contain between 1 and 100 characters without line breaks."
 }
 
 $settings = $null
@@ -97,7 +99,6 @@ if (-not $PreserveConfiguration) {
     $settings = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $settings.Server.ListenUrl = $ListenUrl
     $settings.Server.CertificateThumbprint = $normalizedThumbprint
-    $settings.Access.AllowedPrincipals = @($AllowedPrincipals)
     $settings.LogViewer.Sources[0].RootPath = $LogRoot
     $settings.LogViewer.AllowRawLogs = [bool]$AllowRawLogs
 }
@@ -105,6 +106,17 @@ if (-not $PreserveConfiguration) {
 $fileSink = $settings.Serilog.WriteTo | Where-Object Name -eq "File" | Select-Object -First 1
 if (-not $fileSink) { throw "appsettings.json has no Serilog file sink." }
 $fileSink.Args.path = Join-Path $ApplicationDataPath "logs\viewer-.log"
+if (-not $settings.PSObject.Properties["Authentication"]) {
+    $settings | Add-Member -NotePropertyName Authentication -NotePropertyValue ([pscustomobject]@{
+        DatabasePath = ""
+        DataProtectionKeysPath = ""
+        SessionHours = 8
+    })
+}
+$settings.PSObject.Properties.Remove("Access")
+$identityDatabasePath = Join-Path $ApplicationDataPath "identity.db"
+$settings.Authentication.DatabasePath = $identityDatabasePath
+$settings.Authentication.DataProtectionKeysPath = Join-Path $ApplicationDataPath "keys"
 $settings | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $settingsPath -Encoding UTF8
 
 New-Item -ItemType Directory -Force -Path $ApplicationDataPath | Out-Null
@@ -112,6 +124,34 @@ New-Item -ItemType Directory -Force -Path $ApplicationDataPath | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Failed to restrict the application data directory ACL." }
 
 $installedExecutable = Join-Path $InstallPath "BifitReport.LogViewer.exe"
+$shouldBootstrapUser = $ResetAdminPassword -or -not (Test-Path -LiteralPath $identityDatabasePath)
+if ($shouldBootstrapUser) {
+    try {
+        if (-not $AdminPassword) {
+            $AdminPassword = Read-Host "Password for Log Viewer user '$AdminUser'" -AsSecureString
+        }
+
+        $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($AdminPassword)
+        try {
+            $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPointer)
+            $bootstrapArguments = @("bootstrap-user", "--username", $AdminUser)
+            if ($ResetAdminPassword) { $bootstrapArguments += "--reset-password" }
+            $bootstrapOutput = $plainPassword | & $installedExecutable @bootstrapArguments 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to initialize the Log Viewer user (exit code $LASTEXITCODE): $($bootstrapOutput -join [Environment]::NewLine)"
+            }
+        }
+        finally {
+            $plainPassword = $null
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPointer)
+        }
+    }
+    catch {
+        if ($existingService) { Start-Service -Name $ServiceName -ErrorAction SilentlyContinue }
+        throw
+    }
+}
+
 if (-not $existingService) {
     New-Service `
         -Name $ServiceName `
