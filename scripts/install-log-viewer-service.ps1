@@ -4,6 +4,7 @@
 param(
     [string]$PublishPath = "",
     [string]$InstallPath = "C:\Program Files\BifitReport.LogViewer",
+    [string]$ApplicationDataPath = "C:\ProgramData\BifitReport.LogViewer",
     [string]$LogRoot = "C:\ProgramData\BIFIT\retail\logs",
     [string]$ListenUrl = "https://0.0.0.0:7443",
     [string]$CertificateThumbprint = "",
@@ -26,42 +27,61 @@ if (-not $PublishPath) {
 
 $PublishPath = [IO.Path]::GetFullPath($PublishPath)
 $InstallPath = [IO.Path]::GetFullPath($InstallPath)
+$ApplicationDataPath = [IO.Path]::GetFullPath($ApplicationDataPath)
 $LogRoot = [IO.Path]::GetFullPath($LogRoot)
 if ($InstallPath -in @("C:\", "C:\Program Files", "C:\ProgramData")) {
     throw "InstallPath is too broad: $InstallPath"
 }
+if ($ApplicationDataPath -in @("C:\", "C:\Program Files", "C:\ProgramData")) {
+    throw "ApplicationDataPath is too broad: $ApplicationDataPath"
+}
 if (-not (Test-Path -LiteralPath (Join-Path $PublishPath "BifitReport.LogViewer.exe"))) {
     throw "Published executable not found. Run scripts\publish-log-viewer.ps1 first."
 }
-if (-not (Test-Path -LiteralPath $LogRoot -PathType Container)) {
+if (-not $PreserveConfiguration -and -not (Test-Path -LiteralPath $LogRoot -PathType Container)) {
     throw "Log root does not exist: $LogRoot"
 }
 if ($AllowedPrincipals.Count -eq 0 -or $AllowedPrincipals.Where({ [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
     throw "At least one non-empty AllowedPrincipals value is required."
 }
 
-$existingConfiguration = $null
+$settings = $null
 $settingsPath = Join-Path $InstallPath "appsettings.json"
 if ($PreserveConfiguration) {
     if (-not (Test-Path -LiteralPath $settingsPath)) {
         throw "-PreserveConfiguration requires an existing appsettings.json in $InstallPath."
     }
-    $existingConfiguration = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8
+    $settings = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
 }
 else {
-    $uri = [Uri]$ListenUrl
-    if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne "https" -or $uri.AbsolutePath -ne "/") {
+    $uri = $null
+    if (-not [Uri]::TryCreate($ListenUrl, [UriKind]::Absolute, [ref]$uri) -or
+        $uri.Scheme -ne "https" -or
+        $uri.AbsolutePath -ne "/" -or
+        $uri.Query -or
+        $uri.Fragment -or
+        $uri.UserInfo) {
         throw "The installation script requires an HTTPS ListenUrl without a path."
     }
     if ([string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
         throw "CertificateThumbprint is required. Use a trusted server certificate from LocalMachine\My."
     }
-    $normalizedThumbprint = $CertificateThumbprint -replace '[^0-9A-Fa-f]', ''
-    $certificate = Get-ChildItem -LiteralPath "Cert:\LocalMachine\My\$normalizedThumbprint" -ErrorAction SilentlyContinue
+    $normalizedThumbprint = ($CertificateThumbprint -replace '[\s:]', '').ToUpperInvariant()
+    if ($normalizedThumbprint -notmatch '^[0-9A-F]{40}$') {
+        throw "CertificateThumbprint must contain exactly 40 hexadecimal characters."
+    }
+    $certificate = Get-Item -LiteralPath "Cert:\LocalMachine\My\$normalizedThumbprint" -ErrorAction SilentlyContinue
     if (-not $certificate -or -not $certificate.HasPrivateKey) {
         throw "A certificate with a private key was not found in LocalMachine\My: $normalizedThumbprint"
     }
-    if ($certificate.NotAfter -le (Get-Date)) { throw "The server certificate has expired." }
+    $now = Get-Date
+    if ($certificate.NotBefore -gt $now) { throw "The server certificate is not valid yet." }
+    if ($certificate.NotAfter -le $now) { throw "The server certificate has expired." }
+    if (-not $certificate.Verify()) { throw "The server certificate is not trusted or its chain is invalid." }
+    $enhancedKeyUsage = $certificate.Extensions | Where-Object { $_.Oid.Value -eq "2.5.29.37" } | Select-Object -First 1
+    if ($enhancedKeyUsage -and -not ($enhancedKeyUsage.EnhancedKeyUsages | Where-Object Value -eq "1.3.6.1.5.5.7.3.1")) {
+        throw "The certificate is not valid for Server Authentication."
+    }
 }
 
 $existingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -73,18 +93,23 @@ if ($existingService -and $existingService.Status -ne "Stopped") {
 New-Item -ItemType Directory -Force -Path $InstallPath | Out-Null
 Copy-Item -Path (Join-Path $PublishPath "*") -Destination $InstallPath -Recurse -Force
 
-if ($PreserveConfiguration) {
-    $existingConfiguration | Set-Content -LiteralPath $settingsPath -Encoding UTF8
-}
-else {
+if (-not $PreserveConfiguration) {
     $settings = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $settings.Server.ListenUrl = $ListenUrl
     $settings.Server.CertificateThumbprint = $normalizedThumbprint
     $settings.Access.AllowedPrincipals = @($AllowedPrincipals)
     $settings.LogViewer.Sources[0].RootPath = $LogRoot
     $settings.LogViewer.AllowRawLogs = [bool]$AllowRawLogs
-    $settings | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $settingsPath -Encoding UTF8
 }
+
+$fileSink = $settings.Serilog.WriteTo | Where-Object Name -eq "File" | Select-Object -First 1
+if (-not $fileSink) { throw "appsettings.json has no Serilog file sink." }
+$fileSink.Args.path = Join-Path $ApplicationDataPath "logs\viewer-.log"
+$settings | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $settingsPath -Encoding UTF8
+
+New-Item -ItemType Directory -Force -Path $ApplicationDataPath | Out-Null
+& icacls.exe $ApplicationDataPath /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Failed to restrict the application data directory ACL." }
 
 $installedExecutable = Join-Path $InstallPath "BifitReport.LogViewer.exe"
 if (-not $existingService) {

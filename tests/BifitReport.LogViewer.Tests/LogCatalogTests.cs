@@ -44,6 +44,25 @@ public sealed class LogCatalogTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task PaginatesEntireCatalogAndClampsOutOfRangePage()
+    {
+        Directory.CreateDirectory(_temporaryDirectory);
+        for (var index = 0; index < 205; index++)
+        {
+            await File.WriteAllTextAsync(Path.Combine(_temporaryDirectory, $"desktop-{index:D3}.log"), "line\n");
+        }
+        var catalog = CreateCatalog();
+
+        var secondPage = catalog.GetFiles("bifit", 2, 200, null);
+        var outOfRangePage = catalog.GetFiles("bifit", int.MaxValue, 200, null);
+
+        Assert.Equal(205, secondPage.Total);
+        Assert.Equal(5, secondPage.Items.Count);
+        Assert.Equal(2, outOfRangePage.Page);
+        Assert.Equal(5, outOfRangePage.Items.Count);
+    }
+
     private LogCatalog CreateCatalog() => new(
         Options.Create(TestOptions.Create(_temporaryDirectory)),
         NullLogger<LogCatalog>.Instance);

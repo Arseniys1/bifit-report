@@ -124,10 +124,10 @@ dotnet run --project .\src\BifitReport.LogViewer\BifitReport.LogViewer.csproj -c
 
 ## Эксплуатация и аудит
 
-Служба называется `BifitReport.LogViewer`. Её собственные журналы пишутся с ротацией по дням и размеру в:
+Служба называется `BifitReport.LogViewer`. Её собственные журналы хранятся отдельно от состояния агента отчётов, а установщик ограничивает каталог ACL для `SYSTEM` и локальных администраторов. Ротация выполняется по дням и размеру:
 
 ```text
-C:\ProgramData\BifitReport\LogViewer\logs
+C:\ProgramData\BifitReport.LogViewer\logs
 ```
 
 В аудите есть Windows-пользователь, источник, относительный путь, режим raw и удалённый адрес. Поисковая строка и содержимое кассового журнала в аудит не записываются.

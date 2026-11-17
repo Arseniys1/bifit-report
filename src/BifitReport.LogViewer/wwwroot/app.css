@@ -63,6 +63,8 @@ input:focus, select:focus, button:focus { outline: 2px solid #327d67; outline-of
 .file.active { border-color: #2c6a58; background: var(--accent-soft); }
 .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .file-meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 5px; color: var(--muted); font-size: 11px; }
+.pagination { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
+.pagination button { min-height: 32px; padding: 5px 9px; }
 .catalog-note { min-height: 18px; color: var(--warn); font-size: 11px; }
 
 .workspace { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }

@@ -4,6 +4,7 @@
 param(
     [string]$ServiceName = "BifitReport.LogViewer",
     [string]$InstallPath = "C:\Program Files\BifitReport.LogViewer",
+    [string]$ApplicationDataPath = "C:\ProgramData\BifitReport.LogViewer",
     [switch]$KeepFiles,
     [switch]$RemoveApplicationLogs,
     [switch]$RemoveFirewallRule
@@ -11,8 +12,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 $InstallPath = [IO.Path]::GetFullPath($InstallPath)
+$ApplicationDataPath = [IO.Path]::GetFullPath($ApplicationDataPath)
 if ($InstallPath -in @("C:\", "C:\Program Files", "C:\ProgramData")) {
     throw "InstallPath is too broad: $InstallPath"
+}
+if ($ApplicationDataPath -in @("C:\", "C:\Program Files", "C:\ProgramData")) {
+    throw "ApplicationDataPath is too broad: $ApplicationDataPath"
 }
 
 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -32,13 +37,12 @@ if (-not $KeepFiles -and (Test-Path -LiteralPath $InstallPath)) {
     Remove-Item -LiteralPath $InstallPath -Recurse -Force
 }
 if ($RemoveApplicationLogs) {
-    $applicationLogPath = "C:\ProgramData\BifitReport\LogViewer"
-    if (Test-Path -LiteralPath $applicationLogPath) {
-        Remove-Item -LiteralPath $applicationLogPath -Recurse -Force
+    if (Test-Path -LiteralPath $ApplicationDataPath) {
+        Remove-Item -LiteralPath $ApplicationDataPath -Recurse -Force
     }
 }
 
 Write-Host "Service $ServiceName was removed."
 if (-not $RemoveApplicationLogs) {
-    Write-Host "Application audit logs were kept in C:\ProgramData\BifitReport\LogViewer."
+    Write-Host "Application audit logs were kept in $ApplicationDataPath."
 }

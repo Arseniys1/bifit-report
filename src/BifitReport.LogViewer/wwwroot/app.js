@@ -9,17 +9,22 @@ const state = {
   canFollow: false,
   pollTimer: null,
   loading: false,
-  maxLines: 2000
+  maxLines: 2000,
+  filePage: 1,
+  filePageCount: 1,
+  fileListGeneration: 0,
+  contentGeneration: 0,
+  contentAbortController: null
 };
 
 const elements = Object.fromEntries([
-  "source", "file-filter", "files", "catalog-note", "current-file", "query", "level", "tail",
+  "source", "file-filter", "files", "files-prev", "files-next", "files-page", "catalog-note", "current-file", "query", "level", "tail",
   "raw-control", "raw", "follow", "refresh", "copy", "notice", "log", "line-count", "mode",
   "connection", "user"
 ].map(id => [id, document.getElementById(id)]));
 
-async function api(url) {
-  const response = await fetch(url, { credentials: "same-origin", headers: { "Accept": "application/json" } });
+async function api(url, signal) {
+  const response = await fetch(url, { credentials: "same-origin", headers: { "Accept": "application/json" }, signal });
   if (!response.ok) {
     let message = `HTTP ${response.status}`;
     try { message = (await response.json()).detail || message; } catch { /* response is not JSON */ }
@@ -96,12 +101,22 @@ async function loadSources() {
 
 async function loadFiles() {
   stopPolling();
+  cancelContentLoad();
+  const generation = ++state.fileListGeneration;
+  const sourceId = state.sourceId;
+  const filterValue = elements["file-filter"].value.trim();
   state.fileKey = null;
   elements.files.replaceChildren();
   elements["current-file"].textContent = "Выберите журнал";
   appendLines([], true);
-  const filter = encodeURIComponent(elements["file-filter"].value.trim());
-  const page = await api(`/api/v1/sources/${encodeURIComponent(state.sourceId)}/files?pageSize=200&filter=${filter}`);
+  const filter = encodeURIComponent(filterValue);
+  const page = await api(`/api/v1/sources/${encodeURIComponent(sourceId)}/files?page=${state.filePage}&pageSize=200&filter=${filter}`);
+  if (generation !== state.fileListGeneration || sourceId !== state.sourceId || filterValue !== elements["file-filter"].value.trim()) return;
+  state.filePage = page.page;
+  state.filePageCount = Math.max(1, Math.ceil(page.total / page.pageSize));
+  elements["files-page"].textContent = `${state.filePage} / ${state.filePageCount}`;
+  elements["files-prev"].disabled = state.filePage <= 1;
+  elements["files-next"].disabled = state.filePage >= state.filePageCount;
   for (const file of page.items) {
     const button = document.createElement("button");
     button.type = "button";
@@ -146,12 +161,19 @@ function contentParameters() {
 }
 
 async function loadContent() {
-  if (!state.fileKey || state.loading) return;
+  if (!state.fileKey) return;
+  cancelContentLoad();
+  const generation = ++state.contentGeneration;
+  const sourceId = state.sourceId;
+  const fileKey = state.fileKey;
+  const controller = new AbortController();
+  state.contentAbortController = controller;
   state.loading = true;
   stopPolling();
   showNotice("");
   try {
-    const content = await api(`/api/v1/sources/${encodeURIComponent(state.sourceId)}/files/${encodeURIComponent(state.fileKey)}/content?${contentParameters()}`);
+    const content = await api(`/api/v1/sources/${encodeURIComponent(sourceId)}/files/${encodeURIComponent(fileKey)}/content?${contentParameters()}`, controller.signal);
+    if (generation !== state.contentGeneration || sourceId !== state.sourceId || fileKey !== state.fileKey) return;
     appendLines(content.lines, true);
     state.cursor = content.cursor;
     state.revision = content.revision;
@@ -161,12 +183,22 @@ async function loadContent() {
     if (content.scanTruncated) showNotice("Поиск выполнен только в последних байтах файла: увеличьте MaximumScanBytes для более глубокой истории.");
     setConnection(content.canFollow && elements.follow.checked ? "live" : "idle", content.canFollow && elements.follow.checked ? "live" : "пауза");
   } catch (error) {
+    if (error.name === "AbortError") return;
     setConnection("error", "ошибка");
     showNotice(error.message);
   } finally {
+    if (generation !== state.contentGeneration) return;
+    state.contentAbortController = null;
     state.loading = false;
     schedulePolling();
   }
+}
+
+function cancelContentLoad() {
+  state.contentGeneration++;
+  if (state.contentAbortController !== null) state.contentAbortController.abort();
+  state.contentAbortController = null;
+  state.loading = false;
 }
 
 function schedulePolling(delay = 2000) {
@@ -182,6 +214,8 @@ function stopPolling() {
 
 async function pollUpdates() {
   if (state.loading || !state.fileKey) return schedulePolling();
+  const sourceId = state.sourceId;
+  const fileKey = state.fileKey;
   try {
     const params = new URLSearchParams({
       cursor: String(state.cursor),
@@ -190,7 +224,8 @@ async function pollUpdates() {
       query: elements.query.value.trim(),
       level: elements.level.value
     });
-    const update = await api(`/api/v1/sources/${encodeURIComponent(state.sourceId)}/files/${encodeURIComponent(state.fileKey)}/updates?${params}`);
+    const update = await api(`/api/v1/sources/${encodeURIComponent(sourceId)}/files/${encodeURIComponent(fileKey)}/updates?${params}`);
+    if (sourceId !== state.sourceId || fileKey !== state.fileKey) return;
     if (update.reset) return loadContent();
     appendLines(update.lines, false);
     state.cursor = update.cursor;
@@ -205,11 +240,14 @@ async function pollUpdates() {
 }
 
 let fileFilterTimer;
-elements.source.addEventListener("change", async () => { state.sourceId = elements.source.value; await loadFiles(); });
+elements.source.addEventListener("change", async () => { state.sourceId = elements.source.value; state.filePage = 1; await loadFiles(); });
 elements["file-filter"].addEventListener("input", () => {
   window.clearTimeout(fileFilterTimer);
+  state.filePage = 1;
   fileFilterTimer = window.setTimeout(loadFiles, 300);
 });
+elements["files-prev"].addEventListener("click", async () => { if (state.filePage > 1) { state.filePage--; await loadFiles(); } });
+elements["files-next"].addEventListener("click", async () => { if (state.filePage < state.filePageCount) { state.filePage++; await loadFiles(); } });
 elements.refresh.addEventListener("click", loadContent);
 elements.query.addEventListener("keydown", event => { if (event.key === "Enter") loadContent(); });
 elements.level.addEventListener("change", loadContent);

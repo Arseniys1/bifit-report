@@ -38,7 +38,17 @@ $scriptsTarget = Join-Path $OutputPath "scripts"
 if (Test-Path -LiteralPath $scriptsTarget) {
     Remove-Item -LiteralPath $scriptsTarget -Recurse -Force
 }
-Copy-Item -Path (Join-Path $repositoryRoot "scripts") -Destination $scriptsTarget -Recurse -Force
+New-Item -ItemType Directory -Force -Path $scriptsTarget | Out-Null
+$agentScripts = @(
+    "check-vk.ps1",
+    "install-service.ps1",
+    "send-test-vk.ps1",
+    "set-vk-token.ps1",
+    "uninstall-service.ps1"
+)
+foreach ($scriptName in $agentScripts) {
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot "scripts\$scriptName") -Destination $scriptsTarget -Force
+}
 
 Write-Host "Published: $OutputPath"
 Write-Host "Installer scripts: $scriptsTarget"

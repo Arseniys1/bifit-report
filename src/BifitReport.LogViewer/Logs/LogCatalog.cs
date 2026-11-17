@@ -72,6 +72,8 @@ public sealed class LogCatalog(IOptions<LogViewerOptions> options, ILogger<LogCa
         }
 
         var ordered = entries.OrderByDescending(file => file.LastWriteTime).ThenBy(file => file.RelativePath, StringComparer.OrdinalIgnoreCase).ToArray();
+        var pageCount = Math.Max(1, (ordered.Length + pageSize - 1) / pageSize);
+        page = Math.Min(page, pageCount);
         var items = ordered.Skip((page - 1) * pageSize).Take(pageSize).ToArray();
         return new LogFilePage(items, page, pageSize, ordered.Length, truncated);
     }
